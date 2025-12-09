@@ -10,7 +10,7 @@ const authController_1 = require("../controllers/authController");
 const adminController_1 = require("../controllers/adminController");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const couponController_1 = require("../controllers/couponController");
-const uploadController_1 = require("../controllers/uploadController");
+// import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 const router = express_1.default.Router();
 const uploadFields = productController_1.upload.fields([
     { name: 'image', maxCount: 1 }, // Main image
@@ -19,10 +19,10 @@ const uploadFields = productController_1.upload.fields([
 // Products
 router.route('/products').get(productController_1.getProducts).post(uploadFields, productController_1.createProduct);
 router.route('/products/:id').get(productController_1.getProductById).put(uploadFields, productController_1.updateProduct).delete(authMiddleware_1.protect, authMiddleware_1.admin, productController_1.deleteProduct);
-router.get("/gallery/images", authMiddleware_1.protect, uploadController_1.getImages);
-router.post("/gallery/upload", authMiddleware_1.protect, uploadController_1.galleryUpload.single("image"), uploadController_1.uploadSingleImage);
-router.post("/gallery/upload/multiple", authMiddleware_1.protect, uploadController_1.galleryUpload.array("images", 10), uploadController_1.uploadMultipleImages);
-router.delete("/gallery/delete-image", authMiddleware_1.protect, uploadController_1.deleteImage);
+// router.get("/gallery/images", protect, getImages);
+// router.post("/gallery/upload", protect, galleryUpload.single("image"), uploadSingleImage);
+// router.post("/gallery/upload/multiple", protect, galleryUpload.array("images", 10), uploadMultipleImages);
+// router.delete("/gallery/delete-image", protect, deleteImage);
 // Orders
 router.post("/orders/create", authMiddleware_1.protect, orderController_1.createOrder);
 router.post("/orders/verify", authMiddleware_1.protect, orderController_1.verifyPayment);
