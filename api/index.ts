@@ -3,14 +3,14 @@ import serverless from "serverless-http";
 import dotenv from "dotenv";
 import cors from "cors";
 
-import apiRoutes from "../src/routes/api";
-import connectDB from "../src/config/db";
+// Import compiled JS (NOT TS!) when running on Vercel
+import apiRoutes from "../dist/src/routes/api.js";
+import connectDB from "../dist/src/config/db.js";
 
 dotenv.config();
 
 const app = express();
 
-// Connect database once per cold start
 connectDB();
 
 app.use(
@@ -22,13 +22,10 @@ app.use(
 
 app.use(express.json());
 
-// Attach routes
 app.use("/api", apiRoutes);
 
-// Default test route
 app.get("/", (req, res) => {
     res.send("LapShark Backend Running on Vercel Serverless!");
 });
 
-// Export ONLY handler for Vercel
 export default serverless(app);
