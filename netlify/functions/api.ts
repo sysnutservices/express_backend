@@ -3,8 +3,8 @@ import serverless from "serverless-http";
 import dotenv from "dotenv";
 import cors from "cors";
 
-import apiRoutes from "../../dist/src/routes/api.js";
-import connectDB from "../../dist/src/config/db.js";
+import apiRoutes from "../../dist/routes/api.js";
+import connectDB from "../../dist/config/db.js";
 
 dotenv.config();
 

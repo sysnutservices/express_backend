@@ -6,9 +6,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const cors_1 = __importDefault(require("cors"));
-const api_1 = __importDefault(require("../../src/routes/api"));
+const api_1 = __importDefault(require("../src/routes/api"));
 const path_1 = __importDefault(require("path"));
-const db_1 = __importDefault(require("../../src/config/db"));
+const db_1 = __importDefault(require("../src/config/db"));
 dotenv_1.default.config();
 // Connect to Database
 const app = (0, express_1.default)();
