@@ -5,7 +5,7 @@ import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, up
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
-import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
+// import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
 
@@ -19,10 +19,10 @@ router.route('/products').get(getProducts).post(uploadFields, createProduct);
 router.route('/products/:id').get(getProductById).put(uploadFields, updateProduct).delete(protect, admin, deleteProduct);
 
 
-router.get("/gallery/images", protect, getImages);
-router.post("/gallery/upload", protect, galleryUpload.single("image"), uploadSingleImage);
-router.post("/gallery/upload/multiple", protect, galleryUpload.array("images", 10), uploadMultipleImages);
-router.delete("/gallery/delete-image", protect, deleteImage);
+// router.get("/gallery/images", protect, getImages);
+// router.post("/gallery/upload", protect, galleryUpload.single("image"), uploadSingleImage);
+// router.post("/gallery/upload/multiple", protect, galleryUpload.array("images", 10), uploadMultipleImages);
+// router.delete("/gallery/delete-image", protect, deleteImage);
 
 // Orders
 router.post("/orders/create", protect, createOrder);
