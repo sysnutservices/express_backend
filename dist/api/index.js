@@ -4,8 +4,8 @@ import dotenv from "dotenv";
 import cors from "cors";
 
 // IMPORTANT: Import compiled JS files (dist), not TS (src)
-import apiRoutes from "../dist/routes/api.js";
-import connectDB from "../dist/config/db.js";
+import apiRoutes from "../routes/api.js";
+import connectDB from "../config/db.js";
 
 dotenv.config();
 
