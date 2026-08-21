@@ -5,7 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { imagekit, uploadToImageKit, uploadUrlToImageKit, uploadBufferToImageKit } from '../services/imagekit';
-import { processProductImage } from '../services/imageProcessing';
+import { processProductImage, ProductViewType, ViewPreset, VIEW_PRESETS } from '../services/imageProcessing';
 
 // Configure multer storage
 // const storage = multer.diskStorage({
@@ -348,11 +348,28 @@ export const deleteProduct = async (req: Request, res: Response) => {
   }
 };
 
+// Multipart fields arrive as strings — `settings` is sent as a JSON string
+// when present (mirrors how `viewType` is just a plain field). Invalid JSON
+// is treated as "no overrides" rather than a hard error, since composition
+// overrides are optional.
+function parseSettingsField(raw: unknown): Partial<ViewPreset> | undefined {
+  if (!raw) return undefined;
+  if (typeof raw === 'object') return raw as Partial<ViewPreset>;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 // Runs a picked file (or an already-hosted image, for reprocessing) through
-// PhotoRoom background removal + white-studio compositing, then uploads the
-// result to ImageKit. Called by the admin form the instant an image is
-// picked, before the product itself is saved — the returned URL is what
-// createProduct/updateProduct receive via imageUrl/imageUrls.
+// PhotoRoom background removal + view-preset-driven studio compositing, then
+// uploads the result to ImageKit. Called by the admin form the instant an
+// image is picked, before the product itself is saved — the returned URL is
+// what createProduct/updateProduct receive via imageUrl/imageUrls.
 export const processImage = async (req: Request, res: Response) => {
   try {
     let inputBuffer: Buffer;
@@ -370,9 +387,18 @@ export const processImage = async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'No image file or imageUrl provided' });
     }
 
-    const processedBuffer = await processProductImage(inputBuffer, mimeType);
-    const uploaded = await uploadBufferToImageKit(processedBuffer, '/lapshark/products');
-    res.json({ url: uploaded.url, width: uploaded.width, height: uploaded.height });
+    const viewType: ProductViewType = req.body.viewType in VIEW_PRESETS ? req.body.viewType : 'custom';
+    const settings = parseSettingsField(req.body.settings);
+
+    const result = await processProductImage({ input: inputBuffer, mimeType, viewType, settings });
+    const uploaded = await uploadBufferToImageKit(result.buffer, '/lapshark/products');
+    res.json({
+      url: uploaded.url,
+      width: uploaded.width,
+      height: uploaded.height,
+      viewType: result.viewType,
+      appliedSettings: { scale: result.appliedScale, position: result.appliedPosition },
+    });
   } catch (error: any) {
     console.error('Error processing image:', error);
     res.status(500).json({ message: 'Image processing failed', error: error.message });

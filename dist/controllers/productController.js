@@ -327,11 +327,30 @@ const deleteProduct = (req, res) => __awaiter(void 0, void 0, void 0, function* 
     }
 });
 exports.deleteProduct = deleteProduct;
+// Multipart fields arrive as strings — `settings` is sent as a JSON string
+// when present (mirrors how `viewType` is just a plain field). Invalid JSON
+// is treated as "no overrides" rather than a hard error, since composition
+// overrides are optional.
+function parseSettingsField(raw) {
+    if (!raw)
+        return undefined;
+    if (typeof raw === 'object')
+        return raw;
+    if (typeof raw === 'string') {
+        try {
+            return JSON.parse(raw);
+        }
+        catch (_a) {
+            return undefined;
+        }
+    }
+    return undefined;
+}
 // Runs a picked file (or an already-hosted image, for reprocessing) through
-// PhotoRoom background removal + white-studio compositing, then uploads the
-// result to ImageKit. Called by the admin form the instant an image is
-// picked, before the product itself is saved — the returned URL is what
-// createProduct/updateProduct receive via imageUrl/imageUrls.
+// PhotoRoom background removal + view-preset-driven studio compositing, then
+// uploads the result to ImageKit. Called by the admin form the instant an
+// image is picked, before the product itself is saved — the returned URL is
+// what createProduct/updateProduct receive via imageUrl/imageUrls.
 const processImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         let inputBuffer;
@@ -350,9 +369,17 @@ const processImage = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         else {
             return res.status(400).json({ message: 'No image file or imageUrl provided' });
         }
-        const processedBuffer = yield (0, imageProcessing_1.processProductImage)(inputBuffer, mimeType);
-        const uploaded = yield (0, imagekit_1.uploadBufferToImageKit)(processedBuffer, '/lapshark/products');
-        res.json({ url: uploaded.url, width: uploaded.width, height: uploaded.height });
+        const viewType = req.body.viewType in imageProcessing_1.VIEW_PRESETS ? req.body.viewType : 'custom';
+        const settings = parseSettingsField(req.body.settings);
+        const result = yield (0, imageProcessing_1.processProductImage)({ input: inputBuffer, mimeType, viewType, settings });
+        const uploaded = yield (0, imagekit_1.uploadBufferToImageKit)(result.buffer, '/lapshark/products');
+        res.json({
+            url: uploaded.url,
+            width: uploaded.width,
+            height: uploaded.height,
+            viewType: result.viewType,
+            appliedSettings: { scale: result.appliedScale, position: result.appliedPosition },
+        });
     }
     catch (error) {
         console.error('Error processing image:', error);
