@@ -2,3 +2,5 @@
 node_modules
 yarn.lock
 uploads
+# GCP service-account key (contains a private key) — never commit this
+gen-lang-client-*.json

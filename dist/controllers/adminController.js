@@ -1,4 +1,13 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -7,10 +16,10 @@ exports.updateSiteConfig = exports.getSiteConfig = exports.getDashboardStats = v
 const Order_1 = __importDefault(require("../models/Order"));
 const Product_1 = __importDefault(require("../models/Product"));
 const SiteConfig_1 = __importDefault(require("../models/SiteConfig"));
-const getDashboardStats = async (req, res) => {
+const getDashboardStats = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const orders = await Order_1.default.find({});
-        const products = await Product_1.default.find({});
+        const orders = yield Order_1.default.find({});
+        const products = yield Product_1.default.find({});
         const totalRevenue = orders.reduce((acc, order) => acc + order.total, 0);
         const totalOrders = orders.length;
         const totalProducts = products.length;
@@ -25,11 +34,11 @@ const getDashboardStats = async (req, res) => {
     catch (error) {
         res.status(500).json({ message: 'Server Error' });
     }
-};
+});
 exports.getDashboardStats = getDashboardStats;
-const getSiteConfig = async (req, res) => {
+const getSiteConfig = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        let config = await SiteConfig_1.default.findOne();
+        let config = yield SiteConfig_1.default.findOne();
         if (!config) {
             // Return default if not found
             return res.json({});
@@ -39,24 +48,24 @@ const getSiteConfig = async (req, res) => {
     catch (error) {
         res.status(500).json({ message: 'Server Error' });
     }
-};
+});
 exports.getSiteConfig = getSiteConfig;
-const updateSiteConfig = async (req, res) => {
+const updateSiteConfig = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        let config = await SiteConfig_1.default.findOne();
+        let config = yield SiteConfig_1.default.findOne();
         if (config) {
             Object.assign(config, req.body);
-            const updatedConfig = await config.save();
+            const updatedConfig = yield config.save();
             res.json(updatedConfig);
         }
         else {
             const newConfig = new SiteConfig_1.default(req.body);
-            const savedConfig = await newConfig.save();
+            const savedConfig = yield newConfig.save();
             res.json(savedConfig);
         }
     }
     catch (error) {
         res.status(500).json({ message: 'Server Error' });
     }
-};
+});
 exports.updateSiteConfig = updateSiteConfig;

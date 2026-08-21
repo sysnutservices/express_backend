@@ -1,9 +1,10 @@
+
 import express from 'express';
 import dotenv from 'dotenv';
 import cors from 'cors';
-import apiRoutes from '../src/routes/api';
+import apiRoutes from './routes/api';
 import path from 'path';
-import connectDB from '../src/config/db';
+import connectDB from './config/db';
 
 dotenv.config();
 
@@ -15,12 +16,7 @@ connectDB();
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use(cors());
 app.use(express.json());
-app.use(
-  cors({
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
-);
+
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
   next();

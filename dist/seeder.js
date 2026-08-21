@@ -1,4 +1,13 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -215,83 +224,85 @@ function parseImages(imagesString) {
         gallery: imageUrls.slice(1),
     };
 }
-async function seedProducts() {
-    try {
-        await (0, db_1.default)();
-        console.log("🗑️  Clearing existing products...");
-        await Product_1.default.deleteMany({});
-        console.log("📄 Reading CSV file...");
-        const csvPath = path_1.default.join(__dirname, "./wc-product-export-6-12-2025-1764999664101.csv");
-        const csvProducts = parseCSV(csvPath);
-        console.log(`📊 Found ${csvProducts.length} products in CSV`);
-        const productsToInsert = [];
-        for (const row of csvProducts) {
-            const title = row["Name"];
-            const sku = row["SKU"];
-            const regularPrice = parseFloat(row["Regular price"]) || 0;
-            const salePrice = parseFloat(row["Sale price"]) || 0;
-            const stock = parseInt(row["Stock"]) || 0;
-            const description = cleanHTML(row["Description"]);
-            const shortDescription = cleanHTML(row["Short description"]);
-            const tags = row["Tags"] || "";
-            const imagesString = row["Images"];
-            if (!title || !sku)
-                continue;
-            // Calculate pricing
-            const price = regularPrice;
-            const finalPrice = salePrice || regularPrice;
-            const discountPercent = price > 0 ? Math.round(((price - finalPrice) / price) * 100) : 0;
-            // Extract data
-            const brand = extractBrand(title);
-            const category = determineCategory(title, tags);
-            const slug = generateSlug(title, brand);
-            const specs = extractSpecs(title + " " + description);
-            const configOptions = parseConfigOptions(row);
-            const images = parseImages(imagesString);
-            // Determine condition
-            let condition = "Excellent";
-            if (title.includes("New") && !title.includes("Refurbished")) {
-                condition = "New";
+function seedProducts() {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            yield (0, db_1.default)();
+            console.log("🗑️  Clearing existing products...");
+            yield Product_1.default.deleteMany({});
+            console.log("📄 Reading CSV file...");
+            const csvPath = path_1.default.join(__dirname, "./wc-product-export-6-12-2025-1764999664101.csv");
+            const csvProducts = parseCSV(csvPath);
+            console.log(`📊 Found ${csvProducts.length} products in CSV`);
+            const productsToInsert = [];
+            for (const row of csvProducts) {
+                const title = row["Name"];
+                const sku = row["SKU"];
+                const regularPrice = parseFloat(row["Regular price"]) || 0;
+                const salePrice = parseFloat(row["Sale price"]) || 0;
+                const stock = parseInt(row["Stock"]) || 0;
+                const description = cleanHTML(row["Description"]);
+                const shortDescription = cleanHTML(row["Short description"]);
+                const tags = row["Tags"] || "";
+                const imagesString = row["Images"];
+                if (!title || !sku)
+                    continue;
+                // Calculate pricing
+                const price = regularPrice;
+                const finalPrice = salePrice || regularPrice;
+                const discountPercent = price > 0 ? Math.round(((price - finalPrice) / price) * 100) : 0;
+                // Extract data
+                const brand = extractBrand(title);
+                const category = determineCategory(title, tags);
+                const slug = generateSlug(title, brand);
+                const specs = extractSpecs(title + " " + description);
+                const configOptions = parseConfigOptions(row);
+                const images = parseImages(imagesString);
+                // Determine condition
+                let condition = "Excellent";
+                if (title.includes("New") && !title.includes("Refurbished")) {
+                    condition = "New";
+                }
+                else if (description.includes("Like New")) {
+                    condition = "Like New";
+                }
+                else if (description.includes("Good")) {
+                    condition = "Good";
+                }
+                const product = {
+                    productId: sku,
+                    slug: slug,
+                    title: title,
+                    brand: brand,
+                    category: category,
+                    description: description || shortDescription,
+                    specs: specs,
+                    rating: 4.5,
+                    reviews: Math.floor(Math.random() * 50) + 10,
+                    price: price,
+                    discountPercent: discountPercent,
+                    finalPrice: finalPrice,
+                    stock: stock || 5,
+                    image: images.main,
+                    images: images.gallery,
+                    isNewItem: condition === "New",
+                    isTrending: Math.random() > 0.7,
+                    isBestDeal: discountPercent > 20,
+                    condition: condition,
+                    configOptions: configOptions,
+                };
+                productsToInsert.push(product);
             }
-            else if (description.includes("Like New")) {
-                condition = "Like New";
-            }
-            else if (description.includes("Good")) {
-                condition = "Good";
-            }
-            const product = {
-                productId: sku,
-                slug: slug,
-                title: title,
-                brand: brand,
-                category: category,
-                description: description || shortDescription,
-                specs: specs,
-                rating: 4.5,
-                reviews: Math.floor(Math.random() * 50) + 10,
-                price: price,
-                discountPercent: discountPercent,
-                finalPrice: finalPrice,
-                stock: stock || 5,
-                image: images.main,
-                images: images.gallery,
-                isNewItem: condition === "New",
-                isTrending: Math.random() > 0.7,
-                isBestDeal: discountPercent > 20,
-                condition: condition,
-                configOptions: configOptions,
-            };
-            productsToInsert.push(product);
+            console.log(`💾 Inserting ${productsToInsert.length} products...`);
+            yield Product_1.default.insertMany(productsToInsert);
+            console.log("✅ Products seeded successfully!");
+            console.log(`📦 Total products: ${productsToInsert.length}`);
+            process.exit(0);
         }
-        console.log(`💾 Inserting ${productsToInsert.length} products...`);
-        await Product_1.default.insertMany(productsToInsert);
-        console.log("✅ Products seeded successfully!");
-        console.log(`📦 Total products: ${productsToInsert.length}`);
-        process.exit(0);
-    }
-    catch (err) {
-        console.error("❌ Error seeding products:", err);
-        process.exit(1);
-    }
+        catch (err) {
+            console.error("❌ Error seeding products:", err);
+            process.exit(1);
+        }
+    });
 }
 seedProducts();

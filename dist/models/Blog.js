@@ -34,44 +34,59 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
-const SiteConfigSchema = new mongoose_1.Schema({
-    hero: {
-        title: { type: String, required: true },
-        subtitle: { type: String, required: true },
-        image: { type: String, default: "" },
-        badgeText: { type: String, default: "" },
-        imageMobile: { type: String, default: "" },
-        imageTablet: { type: String, default: "" },
-        imageDesktop: { type: String, default: "" },
-        activeHeroTemplate: { type: String, default: "default" }
+const BlogSchema = new mongoose_1.Schema({
+    title: {
+        type: String,
+        required: true,
+        trim: true
     },
-    banners: [
-        {
-            id: String,
-            title: String,
-            desc: String,
-            image: String,
-            link: String,
-            bg: String,
-            accent: String
-        }
-    ],
-    sections: {
-        hero: { type: Boolean, default: true },
-        brands: { type: Boolean, default: true },
-        trending: { type: Boolean, default: true },
-        flashSale: { type: Boolean, default: true },
-        comparison: { type: Boolean, default: true },
-        emi: { type: Boolean, default: true },
-        explore: { type: Boolean, default: true },
-        blogs: { type: Boolean, default: true },
-        services: { type: Boolean, default: true }
+    slug: {
+        type: String,
+        required: true,
+        unique: true,
+        trim: true
     },
-    contact: {
-        phone: String,
-        email: String,
-        address: String
+    excerpt: {
+        type: String,
+        required: true,
+        trim: true
+    },
+    date: {
+        type: String,
+        required: true
+    },
+    image: {
+        type: String,
+        required: true
+    },
+    content: {
+        type: String,
+        trim: true
+    },
+    // Named author is an E-E-A-T signal and populates BlogPosting schema.
+    author: {
+        type: String,
+        trim: true,
+        default: "Lapshark Team"
+    },
+    // Defaults to published so manual creation through the admin editor
+    // behaves exactly as before. Generated drafts pass "draft" explicitly.
+    // Public reads filter on { status: { $ne: "draft" } } rather than
+    // { status: "published" }, so posts created before this field existed
+    // (which have no status at all) stay visible.
+    status: {
+        type: String,
+        enum: ["draft", "published"],
+        default: "published",
+        index: true
+    },
+    // Which search term the post was written for, so performance can be
+    // measured per keyword later.
+    targetKeyword: {
+        type: String,
+        trim: true
     }
-}, { timestamps: true });
-// Ensure only one config document exists
-exports.default = mongoose_1.default.model('SiteConfig', SiteConfigSchema);
+}, {
+    timestamps: true
+});
+exports.default = mongoose_1.default.model("Blog", BlogSchema);

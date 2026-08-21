@@ -12,22 +12,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// config/db.ts
-const mongoose_1 = __importDefault(require("mongoose"));
-const dotenv_1 = __importDefault(require("dotenv"));
-dotenv_1.default.config();
-const connectDB = () => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const mongoURI = process.env.MONGO_URI;
-        if (!mongoURI) {
-            throw new Error("❌ MONGO_URI is missing in environment variables");
-        }
-        const conn = yield mongoose_1.default.connect(mongoURI);
-        console.log(`📦 MongoDB Connected: ${conn.connection.host}`);
-    }
-    catch (error) {
-        console.error("❌ MongoDB connection error:", error);
-        process.exit(1); // Stop the server if DB fails
-    }
+exports.markdownToHtml = void 0;
+const remark_1 = require("remark");
+const remark_html_1 = __importDefault(require("remark-html"));
+const rehype_sanitize_1 = __importDefault(require("rehype-sanitize"));
+const markdownToHtml = (markdown) => __awaiter(void 0, void 0, void 0, function* () {
+    const result = yield (0, remark_1.remark)()
+        .use(remark_html_1.default)
+        .use(rehype_sanitize_1.default)
+        .process(markdown);
+    return result.toString();
 });
-exports.default = connectDB;
+exports.markdownToHtml = markdownToHtml;
