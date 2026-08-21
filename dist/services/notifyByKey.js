@@ -12,22 +12,25 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// config/db.ts
-const mongoose_1 = __importDefault(require("mongoose"));
-const dotenv_1 = __importDefault(require("dotenv"));
-dotenv_1.default.config();
-const connectDB = () => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const mongoURI = process.env.MONGO_URI;
-        if (!mongoURI) {
-            throw new Error("❌ MONGO_URI is missing in environment variables");
+exports.notifyByKey = notifyByKey;
+const EventDefinition_1 = __importDefault(require("../models/EventDefinition"));
+const eventEmitter_1 = require("./eventEmitter");
+function notifyByKey(eventKey, options) {
+    return __awaiter(this, void 0, void 0, function* () {
+        // 1️⃣ Validate event exists
+        const eventDef = yield EventDefinition_1.default.findOne({
+            key: eventKey,
+            enabled: true
+        }).lean();
+        if (!eventDef) {
+            console.warn(`[EVENT SKIPPED] Not registered: ${eventKey}`);
+            return;
         }
-        const conn = yield mongoose_1.default.connect(mongoURI);
-        console.log(`📦 MongoDB Connected: ${conn.connection.host}`);
-    }
-    catch (error) {
-        console.error("❌ MongoDB connection error:", error);
-        process.exit(1); // Stop the server if DB fails
-    }
-});
-exports.default = connectDB;
+        // 2️⃣ Emit event to WhatsApp backend
+        yield (0, eventEmitter_1.emitEvent)({
+            eventName: eventDef.key,
+            waId: options.waId || "", // 🔥 IMPORTANT
+            payload: Object.assign({ entityId: options.entityId }, options.payload)
+        });
+    });
+}

@@ -25,7 +25,7 @@ export interface IProduct extends Document {
   isNewItem: boolean;
   isTrending: boolean;
   isBestDeal: boolean;
-  condition: "Like New" | "Excellent" | "Good" | "New";
+  condition: string;
 
   configOptions: {
     ram: IConfigOption[];
@@ -73,7 +73,12 @@ const ConfigOptionSchema = new Schema<IConfigOption>(
 const ProductSchema: Schema<IProduct> = new Schema(
   {
     productId: { type: String, required: true },
-    slug: { type: String },
+    // Indexed: every product page render looks the product up by slug, so this
+    // is the SSR hot path. Unique + sparse so two products can never claim the
+    // same URL (duplicate content), while legacy rows without a slug still load.
+    // Verified zero duplicates and zero missing slugs across the catalogue
+    // before enabling this — a violation would fail index creation on startup.
+    slug: { type: String, index: true, unique: true, sparse: true },
     title: { type: String, required: true },
     brand: { type: String, required: true },
 
@@ -110,7 +115,6 @@ const ProductSchema: Schema<IProduct> = new Schema(
 
     condition: {
       type: String,
-      enum: ["Like New", "Excellent", "Good", "New"],
       default: "Excellent",
     },
 

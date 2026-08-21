@@ -6,6 +6,9 @@ import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
 import Coupon from "../models/Coupon";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation } from "../services/wa";
+import { notifyByKey } from "../services/notifyByKey";
+import { LoanEnquiry } from "../models/Enquiry";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
@@ -148,36 +151,102 @@ export const createOrder = async (req: Request, res: Response) => {
 // =========================================================
 // 2️⃣ VERIFY PAYMENT SIGNATURE (MOST IMPORTANT)
 // =========================================================
+// export const verifyPayment = async (req: Request, res: Response) => {
+//   try {
+//     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } =
+//       req.body;
+
+//     // SIGNATURE CHECK (Security)
+//     const body = razorpay_order_id + "|" + razorpay_payment_id;
+
+//     const expectedSignature = crypto
+//       .createHmac("sha256", process.env.RAZORPAY_SECRET!)
+//       .update(body)
+//       .digest("hex");
+
+//     if (expectedSignature !== razorpay_signature) {
+//       return res.status(400).json({ success: false, message: "Invalid Signature" });
+//     }
+
+//     const order = await Order.findOneAndUpdate(
+//       { orderId: razorpay_order_id },
+//       {
+//         paymentStatus: "Paid",
+//         status: "Processing",
+//         razorpayPaymentId: razorpay_payment_id,
+//         razorpaySignature: razorpay_signature,
+//         paidAt: new Date(),
+//       },
+//       { new: true }
+//     );
+
+
+
+
+//     res.json({ success: true, order });
+//   } catch (err: any) {
+//     console.error(err);
+//     res.status(500).json({ success: false, error: err.message });
+//   }
+// };
+
+
 export const verifyPayment = async (req: Request, res: Response) => {
   try {
-    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } =
-      req.body;
+    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
 
-    // SIGNATURE CHECK (Security)
+    // 1️⃣ Verify Razorpay Signature
     const body = razorpay_order_id + "|" + razorpay_payment_id;
-
     const expectedSignature = crypto
       .createHmac("sha256", process.env.RAZORPAY_SECRET!)
       .update(body)
       .digest("hex");
 
     if (expectedSignature !== razorpay_signature) {
-      return res.status(400).json({ success: false, message: "Invalid Signature" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Signature",
+      });
     }
 
-    const order = await Order.findOneAndUpdate(
-      { orderId: razorpay_order_id },
-      {
-        paymentStatus: "Paid",
-        status: "Processing",
-        razorpayPaymentId: razorpay_payment_id,
-        razorpaySignature: razorpay_signature,
-        paidAt: new Date(),
-      },
-      { new: true }
-    );
+    // 2️⃣ Fetch Order + Populate User
+    const order = await Order.findOne({ orderId: razorpay_order_id }).populate("userId");
 
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Type fix here:
+    const user = order.userId as any;
+
+    const customerName = user.name;
+    const customerPhone = user.mobile;
+
+    // 3️⃣ Update the order payment status
+    order.paymentStatus = "Paid";
+    order.status = "Processing";
+    order.razorpayPaymentId = razorpay_payment_id;
+    order.razorpaySignature = razorpay_signature;
+    order.paidAt = new Date();
+    await order.save();
+
+    // 5️⃣ Send WhatsApp Order Confirmation
+    await sendOrderConfirmation(customerPhone, customerName, razorpay_order_id);
+    await sendAdminOrderConfirmationPayload(customerName, customerPhone, razorpay_order_id, order.total as any, order.date as any);
+
+    // 🔔 EVENT EMITTED HERE
+    await notifyByKey("payment.success", {
+      entityId: order.orderId,
+      payload: {
+        amount: order.total,
+        paymentId: razorpay_payment_id
+      },
+      req
+    });
+
+    // 6️⃣ Return the updated order 
     res.json({ success: true, order });
+
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ success: false, error: err.message });
@@ -205,7 +274,7 @@ export const getUserOrders = async (req: Request, res: Response) => {
 // =========================================================
 export const getOrderById = async (req: Request, res: Response) => {
   try {
-    const order = await Order.findById(req.params.id);
+    const order = await Order.findOne({ orderId: req.params.id });
 
     if (!order) return res.status(404).json({ message: "Order not found" });
 
@@ -271,6 +340,37 @@ export const cancelOrder = async (req: Request, res: Response) => {
     await order.save();
 
     res.json({ success: true, order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+
+export const sendLoanEnquiry = async (req: Request, res: Response) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "Phone is required" });
+    }
+
+    const existing = await LoanEnquiry.findOne({ phone });
+
+    if (existing) {
+      return res.status(409).json({
+        success: false,
+        message: "Loan enquiry already submitted",
+      });
+    }
+
+    await LoanEnquiry.create({ phone });
+
+    await sendAdminLoanEnquiryPayload(phone);
+
+    res.json({
+      success: true,
+      message: "Loan enquiry submitted successfully",
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }

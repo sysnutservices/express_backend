@@ -1,9 +1,10 @@
 import { Request, Response } from 'express';
 import Product from '../models/Product';
+import slugify from 'slugify';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import { imagekit } from '../services/imagekit';
+import { imagekit, uploadToImageKit } from '../services/imagekit';
 
 // Configure multer storage
 // const storage = multer.diskStorage({
@@ -20,20 +21,8 @@ import { imagekit } from '../services/imagekit';
 //   }
 // });
 
-const uploadToImageKit = async (file: Express.Multer.File, folder: string) => {
-  const ext = path.extname(file.originalname);
 
-  const filename =
-    "product-" + Date.now() + "-" + Math.round(Math.random() * 1e9) + ext;
 
-  const uploaded = await imagekit.upload({
-    file: file.buffer,
-    fileName: filename,
-    folder,
-  });
-
-  return uploaded.url;
-};
 const fileFilter = (req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -75,6 +64,45 @@ export const getProductById = async (req: Request, res: Response) => {
   }
 };
 
+export const getProductBySlug = async (req: Request, res: Response) => {
+  try {
+    console.log("Slug received:", req.params.slug);
+
+    const product = await Product.findOne({ slug: req.params.slug });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.json(product);
+
+  } catch (error: any) {
+    console.error("Actual Error:", error);
+    res.status(400).json({ message: "Server Error", error: error.message });
+  }
+};
+
+// A product without a slug has no reachable URL and is dropped from the
+// sitemap, so one is always generated. Suffixes on collision because slug is a
+// unique index — a duplicate title would otherwise throw E11000 on save.
+async function uniqueSlug(title: string, excludeId?: string): Promise<string> {
+  // Product titles are pipe-separated spec strings. slugify's strict mode maps
+  // "|" to the word "or", producing dell-5400-or-intel-i5-or-8gb, so the
+  // separators are stripped to spaces first.
+  const cleaned = String(title || 'product').replace(/[|/\\]+/g, ' ');
+  const base = slugify(cleaned, { lower: true, strict: true }) || 'product';
+  let slug = base;
+  let n = 2;
+  while (
+    await Product.exists({
+      slug,
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    })
+  ) {
+    slug = `${base}-${n++}`;
+  }
+  return slug;
+}
 
 export const createProduct = async (req: Request, res: Response) => {
   try {
@@ -86,19 +114,21 @@ export const createProduct = async (req: Request, res: Response) => {
 
     // MAIN IMAGE UPLOAD
     if (files?.image?.[0]) {
-      mainImage = await uploadToImageKit(
+      const uploadResult = await uploadToImageKit(
         files.image[0],
         "/lapshark/products"
       );
+      mainImage = uploadResult.url;
     }
 
     // GALLERY IMAGE UPLOAD
     if (files?.images?.length) {
-      galleryImages = await Promise.all(
+      const uploadResults = await Promise.all(
         files.images.map((img) =>
           uploadToImageKit(img, "/lapshark/products/gallery")
         )
       );
+      galleryImages = uploadResults.map(res => res.url);
     }
 
     // Parse JSON data from form-data
@@ -118,6 +148,13 @@ export const createProduct = async (req: Request, res: Response) => {
       isTrending: req.body.isTrending === 'true',
       isBestDeal: req.body.isBestDeal === 'true',
     };
+
+    // Generated from the title when the admin form leaves it blank.
+    if (!productData.slug || !String(productData.slug).trim()) {
+      productData.slug = await uniqueSlug(productData.title);
+    } else {
+      productData.slug = await uniqueSlug(String(productData.slug));
+    }
 
     const product = new Product(productData);
     const createdProduct = await product.save();
@@ -141,10 +178,11 @@ export const updateProduct = async (req: Request, res: Response) => {
     // 1️⃣ MAIN IMAGE (Upload to ImageKit)
     //
     if (files?.image?.[0]) {
-      product.image = await uploadToImageKit(
+      const uploadResult = await uploadToImageKit(
         files.image[0],
         "/lapshark/products"
       );
+      product.image = uploadResult.url;
     }
 
     //
@@ -174,7 +212,7 @@ export const updateProduct = async (req: Request, res: Response) => {
         )
       );
 
-      galleryImages = [...galleryImages, ...uploadedGallery];
+      galleryImages = [...galleryImages, ...uploadedGallery.map(r => r.url)];
     }
 
     product.images = galleryImages;
@@ -182,13 +220,16 @@ export const updateProduct = async (req: Request, res: Response) => {
     //
     // 3️⃣ Parse JSON fields and ASSIGN them back to product
     //
-    if (req.body.specs) {
+    if (typeof req.body.specs === "string") {
       try {
         product.specs = JSON.parse(req.body.specs);
       } catch (err) {
         console.error("Invalid specs JSON", err);
       }
+    } else if (typeof req.body.specs === "object") {
+      product.specs = req.body.specs;
     }
+
 
     if (req.body.configOptions) {
       try {
@@ -207,7 +248,12 @@ export const updateProduct = async (req: Request, res: Response) => {
     if (req.body.category !== undefined) product.category = req.body.category;
     if (req.body.condition !== undefined) product.condition = req.body.condition;
     if (req.body.productId !== undefined) product.productId = req.body.productId;
-
+    if (req.body.slug !== undefined) product.slug = req.body.slug;
+    // Backfill only. An existing slug is never regenerated on edit: changing a
+    // live URL breaks inbound links and loses whatever ranking it has earned.
+    if (!product.slug || !String(product.slug).trim()) {
+      product.slug = await uniqueSlug(product.title, String(product._id));
+    }
     if (req.body.price !== undefined) product.price = Number(req.body.price);
     if (req.body.discountPercent !== undefined) product.discountPercent = Number(req.body.discountPercent);
     if (req.body.stock !== undefined) product.stock = Number(req.body.stock);

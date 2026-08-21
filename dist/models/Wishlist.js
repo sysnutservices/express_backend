@@ -34,44 +34,21 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const mongoose_1 = __importStar(require("mongoose"));
-const SiteConfigSchema = new mongoose_1.Schema({
-    hero: {
-        title: { type: String, required: true },
-        subtitle: { type: String, required: true },
-        image: { type: String, default: "" },
-        badgeText: { type: String, default: "" },
-        imageMobile: { type: String, default: "" },
-        imageTablet: { type: String, default: "" },
-        imageDesktop: { type: String, default: "" },
-        activeHeroTemplate: { type: String, default: "default" }
+const WishlistItemSchema = new mongoose_1.Schema({
+    productId: { type: String, required: true },
+    title: String,
+    image: String,
+    finalPrice: Number,
+    price: Number,
+    specs: {
+        processor: String,
+        ram: String,
+        storage: String,
     },
-    banners: [
-        {
-            id: String,
-            title: String,
-            desc: String,
-            image: String,
-            link: String,
-            bg: String,
-            accent: String
-        }
-    ],
-    sections: {
-        hero: { type: Boolean, default: true },
-        brands: { type: Boolean, default: true },
-        trending: { type: Boolean, default: true },
-        flashSale: { type: Boolean, default: true },
-        comparison: { type: Boolean, default: true },
-        emi: { type: Boolean, default: true },
-        explore: { type: Boolean, default: true },
-        blogs: { type: Boolean, default: true },
-        services: { type: Boolean, default: true }
-    },
-    contact: {
-        phone: String,
-        email: String,
-        address: String
-    }
+    addedAt: { type: Date, default: Date.now },
+}, { _id: false });
+const WishlistSchema = new mongoose_1.Schema({
+    userId: { type: mongoose_1.Schema.Types.ObjectId, ref: "User", required: true },
+    items: [WishlistItemSchema],
 }, { timestamps: true });
-// Ensure only one config document exists
-exports.default = mongoose_1.default.model('SiteConfig', SiteConfigSchema);
+exports.default = mongoose_1.default.model("Wishlist", WishlistSchema);

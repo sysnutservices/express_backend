@@ -108,16 +108,19 @@ export const customerLogin = async (req: Request, res: Response) => {
 
 export const adminLogin = async (req: Request, res: Response) => {
   const { email, password } = req.body;
+  console.log(`[DEBUG adminLogin] email="${email}" passwordLen=${password ? password.length : 0}`);
   if (!email || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
   const user = await User.findOne({ email });
   if (!user) {
+    console.log(`[DEBUG adminLogin] no user found for email="${email}"`);
     return res.status(404).json({ message: 'User not found' });
   }
 
   const passwordMatch = await bcrypt.compare(password, user.password as string);
+  console.log(`[DEBUG adminLogin] passwordMatch=${passwordMatch} for email="${email}"`);
   if (!passwordMatch) {
     return res.status(401).json({ message: 'Invalid password' });
   }

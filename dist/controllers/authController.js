@@ -1,4 +1,13 @@
 "use strict";
+var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
+    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
+    return new (P || (P = Promise))(function (resolve, reject) {
+        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
+        function rejected(value) { try { step(generator["throw"](value)); } catch (e) { reject(e); } }
+        function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
+        step((generator = generator.apply(thisArg, _arguments || [])).next());
+    });
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -17,7 +26,7 @@ const generateToken = (user) => {
     }, process.env.JWT_SECRET, { expiresIn: "30d" });
 };
 const otpStore = new Map();
-const sendOTP = async (req, res) => {
+const sendOTP = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { mobile } = req.body;
     if (!mobile || !/^\d{10}$/.test(mobile)) {
         return res.status(400).json({ message: 'Invalid mobile number' });
@@ -29,15 +38,15 @@ const sendOTP = async (req, res) => {
         otp,
         expiresAt: new Date(Date.now() + 5 * 60 * 1000)
     });
-    await (0, wa_1.sendOtp)(mobile, otp);
+    yield (0, wa_1.sendOtp)(mobile, otp);
     console.log(`OTP for ${mobile}: ${otp}`);
     res.json({
         message: 'OTP sent successfully',
         mobile
     });
-};
+});
 exports.sendOTP = sendOTP;
-const customerLogin = async (req, res) => {
+const customerLogin = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { mobile, otp } = req.body;
     // Validate input
     if (!mobile || !otp) {
@@ -60,10 +69,10 @@ const customerLogin = async (req, res) => {
     // OTP is valid, delete it
     otpStore.delete(mobile);
     // Check if user exists
-    let user = await User_1.default.findOne({ mobile });
+    let user = yield User_1.default.findOne({ mobile });
     if (!user) {
         // User doesn't exist - create new account automatically
-        user = await User_1.default.create({
+        user = yield User_1.default.create({
             mobile,
             role: 'customer',
             // Optional: set a flag to indicate profile is incomplete
@@ -87,18 +96,21 @@ const customerLogin = async (req, res) => {
             })
         }
     });
-};
+});
 exports.customerLogin = customerLogin;
-const adminLogin = async (req, res) => {
+const adminLogin = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { email, password } = req.body;
+    console.log(`[DEBUG adminLogin] email="${email}" passwordLen=${password ? password.length : 0}`);
     if (!email || !password) {
         return res.status(400).json({ message: 'Email and password are required' });
     }
-    const user = await User_1.default.findOne({ email });
+    const user = yield User_1.default.findOne({ email });
     if (!user) {
+        console.log(`[DEBUG adminLogin] no user found for email="${email}"`);
         return res.status(404).json({ message: 'User not found' });
     }
-    const passwordMatch = await bcryptjs_1.default.compare(password, user.password);
+    const passwordMatch = yield bcryptjs_1.default.compare(password, user.password);
+    console.log(`[DEBUG adminLogin] passwordMatch=${passwordMatch} for email="${email}"`);
     if (!passwordMatch) {
         return res.status(401).json({ message: 'Invalid password' });
     }
@@ -114,29 +126,30 @@ const adminLogin = async (req, res) => {
             role: "admin"
         })
     });
-};
+});
 exports.adminLogin = adminLogin;
-const getUsers = async (req, res) => {
-    const users = await User_1.default.find({});
+const getUsers = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const users = yield User_1.default.find({});
     res.json(users);
-};
+});
 exports.getUsers = getUsers;
-const blockUser = async (req, res) => {
-    const user = await User_1.default.findById(req.params.id);
+const blockUser = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const user = yield User_1.default.findById(req.params.id);
     if (user) {
         user.status = user.status === 'blocked' ? 'active' : 'blocked';
-        await user.save();
+        yield user.save();
         res.json(user);
     }
     else {
         res.status(404).json({ message: 'User not found' });
     }
-};
+});
 exports.blockUser = blockUser;
 // =========================================================
 // 1️⃣ ADD NEW ADDRESS
 // =========================================================
-const addAddress = async (req, res) => {
+const addAddress = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
         const { name, street, city, state, zip, phone, type } = req.body;
         const newAddress = {
@@ -149,7 +162,7 @@ const addAddress = async (req, res) => {
             phone,
             type
         };
-        const user = await User_1.default.findByIdAndUpdate(req.user?.id, {
+        const user = yield User_1.default.findByIdAndUpdate((_a = req.user) === null || _a === void 0 ? void 0 : _a.id, {
             $push: { addressBook: newAddress },
             isProfileComplete: true,
             defaultAddressId: newAddress.id
@@ -159,16 +172,17 @@ const addAddress = async (req, res) => {
     catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
+});
 exports.addAddress = addAddress;
 // =========================================================
 // 2️⃣ UPDATE A SPECIFIC ADDRESS
 // =========================================================
-const updateAddress = async (req, res) => {
+const updateAddress = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
         const { addressId } = req.params;
         const updatedData = req.body;
-        const user = await User_1.default.findOneAndUpdate({ _id: req.user?.id, "addressBook.id": addressId }, {
+        const user = yield User_1.default.findOneAndUpdate({ _id: (_a = req.user) === null || _a === void 0 ? void 0 : _a.id, "addressBook.id": addressId }, {
             $set: {
                 "addressBook.$.name": updatedData.name,
                 "addressBook.$.street": updatedData.street,
@@ -184,18 +198,19 @@ const updateAddress = async (req, res) => {
     catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
+});
 exports.updateAddress = updateAddress;
 // =========================================================
 // 3️⃣ DELETE ADDRESS
 // =========================================================
-const deleteAddress = async (req, res) => {
+const deleteAddress = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c;
     try {
         const { addressId } = req.params;
-        const userId = req.user?.id; // adapt to your auth middleware
+        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id; // adapt to your auth middleware
         if (!userId)
             return res.status(401).json({ message: "Unauthorized" });
-        const user = await User_1.default.findById(userId);
+        const user = yield User_1.default.findById(userId);
         if (!user)
             return res.status(404).json({ message: "User not found" });
         // Defensive: ensure addressBook is an array
@@ -209,57 +224,60 @@ const deleteAddress = async (req, res) => {
         }
         // If the removed address was the default, pick a new default (or null)
         if (user.defaultAddressId === addressId) {
-            user.defaultAddressId = user.addressBook[0]?.id ?? null;
+            user.defaultAddressId = (_c = (_b = user.addressBook[0]) === null || _b === void 0 ? void 0 : _b.id) !== null && _c !== void 0 ? _c : null;
         }
-        await user.save();
+        yield user.save();
         res.json({ success: true, user });
     }
     catch (err) {
         console.error("deleteAddress error:", err);
         res.status(500).json({ error: err.message || "Server error" });
     }
-};
+});
 exports.deleteAddress = deleteAddress;
 // =========================================================
 // 4️⃣ SET DEFAULT ADDRESS
 // =========================================================
-const setDefaultAddress = async (req, res) => {
+const setDefaultAddress = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
         const { addressId } = req.params;
-        const user = await User_1.default.findByIdAndUpdate(req.user?.id, { defaultAddressId: addressId }, { new: true });
+        const user = yield User_1.default.findByIdAndUpdate((_a = req.user) === null || _a === void 0 ? void 0 : _a.id, { defaultAddressId: addressId }, { new: true });
         res.json({ success: true, user });
     }
     catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
+});
 exports.setDefaultAddress = setDefaultAddress;
 // =========================================================
 // 5️⃣ GET ALL ADDRESSES
 // =========================================================
-const getAddresses = async (req, res) => {
+const getAddresses = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
-        const user = await User_1.default.findById(req.user?.id);
+        const user = yield User_1.default.findById((_a = req.user) === null || _a === void 0 ? void 0 : _a.id);
         res.json({
             success: true,
-            addresses: user?.addressBook || [],
-            defaultAddressId: user?.defaultAddressId || null
+            addresses: (user === null || user === void 0 ? void 0 : user.addressBook) || [],
+            defaultAddressId: (user === null || user === void 0 ? void 0 : user.defaultAddressId) || null
         });
     }
     catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
+});
 exports.getAddresses = getAddresses;
-const updateProfile = async (req, res) => {
+const updateProfile = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a;
     try {
         const { name, mobile, email } = req.body;
-        const userId = req.user?.id;
-        const user = await User_1.default.findByIdAndUpdate(userId, { name, mobile, email }, { new: true });
+        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
+        const user = yield User_1.default.findByIdAndUpdate(userId, { name, mobile, email }, { new: true });
         res.json({ success: true, user });
     }
     catch (err) {
         res.status(500).json({ error: err.message });
     }
-};
+});
 exports.updateProfile = updateProfile;

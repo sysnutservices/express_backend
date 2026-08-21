@@ -12,22 +12,21 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-// config/db.ts
-const mongoose_1 = __importDefault(require("mongoose"));
+exports.emitEvent = emitEvent;
+const axios_1 = __importDefault(require("axios"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
-const connectDB = () => __awaiter(void 0, void 0, void 0, function* () {
-    try {
-        const mongoURI = process.env.MONGO_URI;
-        if (!mongoURI) {
-            throw new Error("❌ MONGO_URI is missing in environment variables");
-        }
-        const conn = yield mongoose_1.default.connect(mongoURI);
-        console.log(`📦 MongoDB Connected: ${conn.connection.host}`);
-    }
-    catch (error) {
-        console.error("❌ MongoDB connection error:", error);
-        process.exit(1); // Stop the server if DB fails
-    }
-});
-exports.default = connectDB;
+function emitEvent(event) {
+    return __awaiter(this, void 0, void 0, function* () {
+        yield axios_1.default.post("http://localhost:3000/api/events", {
+            eventName: event.eventName,
+            payload: event.payload || {},
+            waId: event.waId || "",
+            conversationId: event.conversationId || ""
+        }, {
+            headers: {
+                "x-event-secret": process.env.EVENT_SECRET || "event-secret"
+            }
+        });
+    });
+}
