@@ -3,7 +3,7 @@ import { getProducts, getProductById, createProduct, updateProduct, deleteProduc
 import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, sendLoanEnquiry } from '../controllers/orderController';
 import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
-import { protect, admin } from '../middleware/authMiddleware';
+import { protect, admin, internalOnly } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
 import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, deleteBlog } from '../controllers/blogController';
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
@@ -112,17 +112,20 @@ router.get("/cart", protect, getCart);
 router.post("/cart/add", protect, addToCart);
 router.put("/cart/update", protect, updateCartItem);
 router.delete("/cart/remove/:productId", protect, removeCartItem);
-router.get("/cart/all", getAllCart);
-router.put("/cart/notified/:cartId", notifiedCart)
-router.get("/cart/waId/:waId", getCartByWaId);
-router.put("/cart/settings", updateAbandonedCartSettings);
-router.get("/cart/settings", getAbandonedCartSettings);
+// Called by wamigo_backend's abandoned-cart cron/flow executor, not by any
+// logged-in Lapshark user — no auth at all otherwise let anyone read a
+// customer's cart by phone number or mark/silence carts.
+router.get("/cart/all", internalOnly, getAllCart);
+router.put("/cart/notified/:cartId", internalOnly, notifiedCart)
+router.get("/cart/waId/:waId", internalOnly, getCartByWaId);
+// No known caller for these — admin-panel-shaped config with no UI built
+// yet, so gate it the way that UI would need to anyway.
+router.put("/cart/settings", protect, admin, updateAbandonedCartSettings);
+router.get("/cart/settings", protect, admin, getAbandonedCartSettings);
 router.post("/loan/enquiry", protect, sendLoanEnquiry);
 
 router.delete("/cart/clear", protect, clearCart);
 
 // PUBLIC
 router.get("/public", getAllBlogs);
-
-router.post("/loan/enquiry", protect, sendLoanEnquiry);
 export default router;

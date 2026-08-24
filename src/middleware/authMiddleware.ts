@@ -33,3 +33,14 @@ export const admin = (req: AuthRequest, res: Response, next: NextFunction) => {
   }
   return res.status(401).json({ message: "Not authorized as admin" });
 };
+
+// For endpoints called server-to-server by the abandoned-cart automation
+// (wamigo_backend's cron + flow executor) rather than a logged-in Lapshark
+// user — protect/admin don't apply since there's no user session at all.
+export const internalOnly = (req: Request, res: Response, next: NextFunction) => {
+  const key = req.headers["x-internal-key"];
+  if (key && key === process.env.INTERNAL_API_KEY) {
+    return next();
+  }
+  return res.status(401).json({ message: "Not authorized" });
+};
