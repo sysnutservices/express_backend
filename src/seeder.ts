@@ -113,9 +113,9 @@ function parseConfigOptions(row: any): any {
     ram: [],
     storage: [],
     warranty: [
-      { label: "1 Year Warranty", value: "1 Year", price: 0 },
-      { label: "2 Year Coverage", value: "2 Year", price: 2499 },
-      { label: "3 Year Premium", value: "3 Year", price: 4499 },
+      { label: "6 Months Warranty", value: "6 Months", price: 0 },
+      { label: "1 Year Warranty", value: "1 Year", price: 1500 },
+      { label: "2 Year Warranty", value: "2 Year", price: 2999 },
     ],
   };
 

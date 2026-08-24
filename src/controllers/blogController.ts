@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import slugify from "slugify";
-import Blog from "../models/Blog.js";
+import Blog from "../models/Blog";
 import mongoose from "mongoose";
 
 export const createBlog = async (req: Request, res: Response) => {

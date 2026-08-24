@@ -9,7 +9,13 @@ export interface ISiteConfig extends Document {
     imageMobile: { type: String, default: '' },
     imageTablet: { type: String, default: '' },
     imageDesktop: { type: String, default: '' },
-    activeHeroTemplate: { type: String, default: 'default' }
+    activeHeroTemplate: { type: String, default: 'default' },
+    slides: Array<{
+      href: string;
+      imageDesktop: string;
+      imageTablet: string;
+      imageMobile: string;
+    }>;
   },
   banners: Array<{
     id: string;
@@ -50,7 +56,19 @@ const SiteConfigSchema = new Schema(
       imageTablet: { type: String, default: "" },
       imageDesktop: { type: String, default: "" },
 
-      activeHeroTemplate: { type: String, default: "default" }
+      activeHeroTemplate: { type: String, default: "default" },
+
+      // Multiple hero banners shown as a slideshow. Legacy single image/imageDesktop/
+      // imageTablet/imageMobile fields above stay as a fallback for configs saved
+      // before this existed.
+      slides: [
+        {
+          href: { type: String, default: "/products" },
+          imageDesktop: String,
+          imageTablet: String,
+          imageMobile: String,
+        }
+      ]
     },
 
     banners: [

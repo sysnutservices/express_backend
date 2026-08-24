@@ -32,14 +32,12 @@ export const uploadGalleryImage = async (req: Request, res: Response) => {
 
         return res.status(201).json({
             success: true,
-            image: {
-                fileId: upload.fileId,
-                url: upload.url,
-                thumbnailUrl: upload.thumbnailUrl,
-                width: upload.width,
-                height: upload.height,
-                size: upload.size,
-            },
+            fileId: upload.fileId,
+            url: upload.url,
+            thumbnailUrl: upload.thumbnailUrl,
+            width: upload.width,
+            height: upload.height,
+            size: upload.size,
         });
     } catch (error) {
         console.error("GALLERY UPLOAD ERROR:", error);
