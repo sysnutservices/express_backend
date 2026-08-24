@@ -5,10 +5,10 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import Coupon from "../models/Coupon";
 import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation } from "../services/wa";
 import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
+import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
@@ -41,13 +41,6 @@ export const createOrder = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Products not found" });
     }
 
-    // ---- Validate Coupon ----
-    let couponData = null;
-    if (coupon) {
-      couponData = await Coupon.findOne({ code: coupon });
-      if (!couponData)
-        return res.status(404).json({ message: "Invalid coupon code" });
-    }
 
     // ---- Calculate Total ----
     let total = 0;
@@ -93,9 +86,21 @@ export const createOrder = async (req: Request, res: Response) => {
       };
     });
 
-    // ---- Apply Coupon Once (Flat Discount) ----
-    if (couponData) {
-      total = Math.max(0, total - couponData.value);
+    // ---- Validate + Apply Coupon ----
+    // Same rules (active/expiry/usage-limit/min-order-value/percentage-vs-
+    // fixed) as the checkout "Apply Coupon" preview — this is the path that
+    // actually creates a chargeable order, so it has to enforce them too,
+    // not just trust whatever the client already saw from /coupons/validate.
+    let discountAmount = 0;
+    let appliedCouponCode: string | null = null;
+    if (coupon) {
+      const couponResult = await validateAndComputeCoupon(coupon, total);
+      if (!couponResult.valid) {
+        return res.status(400).json({ message: couponResult.message || "Invalid coupon code" });
+      }
+      discountAmount = couponResult.discountAmount;
+      appliedCouponCode = couponResult.coupon!.code;
+      total = couponResult.finalAmount;
     }
 
     // ---- Create Razorpay Order ----
@@ -117,7 +122,7 @@ export const createOrder = async (req: Request, res: Response) => {
       status: "Pending",
       paymentStatus: "Pending",
       paymentMethod,
-      couponValue: couponData?.value || 0,
+      couponValue: discountAmount,
       shippingAddress: {
         street: shippingAddress.street,
         city: shippingAddress.city,
@@ -127,7 +132,7 @@ export const createOrder = async (req: Request, res: Response) => {
         type: shippingAddress.type
       },
       items: updatedItems,
-      coupon: couponData?.code || null,
+      coupon: appliedCouponCode,
       razorpayOrderId: razorpayOrder.id
     });
 
@@ -151,46 +156,6 @@ export const createOrder = async (req: Request, res: Response) => {
 // =========================================================
 // 2️⃣ VERIFY PAYMENT SIGNATURE (MOST IMPORTANT)
 // =========================================================
-// export const verifyPayment = async (req: Request, res: Response) => {
-//   try {
-//     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } =
-//       req.body;
-
-//     // SIGNATURE CHECK (Security)
-//     const body = razorpay_order_id + "|" + razorpay_payment_id;
-
-//     const expectedSignature = crypto
-//       .createHmac("sha256", process.env.RAZORPAY_SECRET!)
-//       .update(body)
-//       .digest("hex");
-
-//     if (expectedSignature !== razorpay_signature) {
-//       return res.status(400).json({ success: false, message: "Invalid Signature" });
-//     }
-
-//     const order = await Order.findOneAndUpdate(
-//       { orderId: razorpay_order_id },
-//       {
-//         paymentStatus: "Paid",
-//         status: "Processing",
-//         razorpayPaymentId: razorpay_payment_id,
-//         razorpaySignature: razorpay_signature,
-//         paidAt: new Date(),
-//       },
-//       { new: true }
-//     );
-
-
-
-
-//     res.json({ success: true, order });
-//   } catch (err: any) {
-//     console.error(err);
-//     res.status(500).json({ success: false, error: err.message });
-//   }
-// };
-
-
 export const verifyPayment = async (req: Request, res: Response) => {
   try {
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
@@ -216,6 +181,13 @@ export const verifyPayment = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
+    // Idempotency: a retried/duplicated call with the same (still valid)
+    // signature would otherwise re-send both WhatsApp confirmations and
+    // double-count the coupon's usedCount on every repeat.
+    if (order.paymentStatus === "Paid") {
+      return res.json({ success: true, order });
+    }
+
     // Type fix here:
     const user = order.userId as any;
 
@@ -229,6 +201,13 @@ export const verifyPayment = async (req: Request, res: Response) => {
     order.razorpaySignature = razorpay_signature;
     order.paidAt = new Date();
     await order.save();
+
+    // Coupon only actually counts as "used" once payment is confirmed —
+    // createOrder validates it, but abandoning the Razorpay popup before
+    // paying shouldn't burn a redemption.
+    if (order.coupon) {
+      await markCouponUsed(order.coupon);
+    }
 
     // 5️⃣ Send WhatsApp Order Confirmation
     await sendOrderConfirmation(customerPhone, customerName, razorpay_order_id);
