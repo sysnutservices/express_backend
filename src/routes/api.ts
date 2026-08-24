@@ -43,21 +43,26 @@ router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
 router.post('/products/process-image', protect, admin, upload.single('image'), processImage);
 
 
-router.get("/gallery/images", protect, getGalleryImages);
-router.post("/gallery/upload", protect, galleryUpload.single("image"), uploadGalleryImage);
-router.post("/gallery/upload/multiple", protect, galleryUpload.array("images", 10), uploadMultipleGalleryImages);
-router.delete("/gallery/delete-image/:fileId", protect, deleteGalleryImage); // Updated route to accept fileId param
-router.delete("/gallery/delete-image", protect, deleteGalleryImage); // Keep body-based delete for flexibility if needed
+// Site Editor's image library — admin CMS only, no customer-facing use.
+// protect alone (no admin) let any logged-in customer list/upload/delete it.
+router.get("/gallery/images", protect, admin, getGalleryImages);
+router.post("/gallery/upload", protect, admin, galleryUpload.single("image"), uploadGalleryImage);
+router.post("/gallery/upload/multiple", protect, admin, galleryUpload.array("images", 10), uploadMultipleGalleryImages);
+router.delete("/gallery/delete-image/:fileId", protect, admin, deleteGalleryImage); // Updated route to accept fileId param
+router.delete("/gallery/delete-image", protect, admin, deleteGalleryImage); // Keep body-based delete for flexibility if needed
 
 // Orders
 router.post("/orders/create", protect, createOrder);
 router.post("/orders/verify", protect, verifyPayment);
 router.get("/orders/mine", protect, getUserOrders);
-router.get("/orders/:id", getOrderById);
+// getOrderById/cancelOrder check ownership (or admin) inside the controller
+// — protect alone would still let any logged-in customer view/cancel any
+// other customer's order by id.
+router.get("/orders/:id", protect, getOrderById);
 
-router.get("/orders/", adminGetAllOrders);
-router.put("/orders/:id/status", updateOrderStatus);
-router.put("/orders/:id/cancel", cancelOrder);
+router.get("/orders/", protect, admin, adminGetAllOrders);
+router.put("/orders/:id/status", protect, admin, updateOrderStatus);
+router.put("/orders/:id/cancel", protect, cancelOrder);
 
 // Site Config
 router.get('/site-config', publicCache, getSiteConfig);
@@ -76,7 +81,9 @@ router.put('/users/address/:addressId', protect, updateAddress);
 router.delete('/users/address/:addressId', protect, deleteAddress);
 router.post('/users/address/:addressId/set-default', protect, setDefaultAddress);
 
-router.route('/coupons').get(getCoupons).post(protect, admin, createCoupon);
+// The full coupon list is admin-panel-only — checkout validates a single
+// code via /coupons/validate instead, so this never needed to be public.
+router.route('/coupons').get(protect, admin, getCoupons).post(protect, admin, createCoupon);
 router.route('/coupons/:id').put(protect, admin, updateCoupon).delete(protect, admin, deleteCoupon);
 router.route('/coupons/validate').post(validateCoupon);
 // Admin / Site Config

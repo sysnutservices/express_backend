@@ -125,6 +125,13 @@ export const adminLogin = async (req: Request, res: Response) => {
     return res.status(401).json({ message: 'Invalid password' });
   }
 
+  // This issues a role: "admin" token below unconditionally — without this
+  // check, any user record with a matching email+password (not just real
+  // admins) would get one, regardless of their actual role in the DB.
+  if (user.role !== 'admin') {
+    return res.status(403).json({ message: 'Not authorized as admin' });
+  }
+
   return res.json({
     user: {
       _id: user._id,

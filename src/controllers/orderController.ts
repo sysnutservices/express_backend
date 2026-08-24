@@ -278,6 +278,13 @@ export const getOrderById = async (req: Request, res: Response) => {
 
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    // protect only confirms *someone* is logged in — without this, any
+    // customer could read any other customer's order by guessing its id.
+    const reqUser = (req as any).user;
+    if (reqUser?.role !== "admin" && order.userId?.toString() !== reqUser?.id) {
+      return res.status(403).json({ message: "Not authorized to view this order" });
+    }
+
     res.json({ success: true, order });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -333,6 +340,11 @@ export const cancelOrder = async (req: Request, res: Response) => {
     const order = await Order.findById(req.params.id);
 
     if (!order) return res.status(404).json({ message: "Order not found" });
+
+    const reqUser = (req as any).user;
+    if (reqUser?.role !== "admin" && order.userId?.toString() !== reqUser?.id) {
+      return res.status(403).json({ message: "Not authorized to cancel this order" });
+    }
 
     order.status = "Cancelled";
     order.paymentStatus = "Failed";
