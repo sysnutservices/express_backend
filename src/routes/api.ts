@@ -1,6 +1,6 @@
 import express from 'express';
 import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage } from '../controllers/productController';
-import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, sendLoanEnquiry } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry } from '../controllers/orderController';
 import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
@@ -54,6 +54,10 @@ router.delete("/gallery/delete-image", protect, admin, deleteGalleryImage); // K
 // Orders
 router.post("/orders/create", protect, createOrder);
 router.post("/orders/verify", protect, verifyPayment);
+// Razorpay's own server calls this, not a logged-in Lapshark user — no
+// protect; authenticated instead by verifying Razorpay's webhook signature
+// inside the handler (see razorpayWebhook's comment).
+router.post("/orders/webhook", razorpayWebhook);
 router.get("/orders/mine", protect, getUserOrders);
 // getOrderById/cancelOrder check ownership (or admin) inside the controller
 // — protect alone would still let any logged-in customer view/cancel any

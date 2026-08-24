@@ -154,6 +154,60 @@ export const createOrder = async (req: Request, res: Response) => {
 
 
 // =========================================================
+// Shared by verifyPayment (client, right after Razorpay's checkout.js
+// succeeds) and razorpayWebhook (Razorpay's own server calling back,
+// independent of whether the customer's browser ever managed to). Both are
+// legitimate ways to learn a payment succeeded, and either can arrive
+// first — the findOneAndUpdate's paymentStatus:{$ne:"Paid"} filter is what
+// makes only one of them actually run the side effects below, atomically,
+// instead of a read-then-write race letting both send duplicate WhatsApp
+// confirmations and double-count the coupon's usedCount.
+// =========================================================
+async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string | undefined, req: Request) {
+  const update: Record<string, unknown> = {
+    paymentStatus: "Paid",
+    status: "Processing",
+    razorpayPaymentId,
+    paidAt: new Date(),
+  };
+  if (razorpaySignature) update.razorpaySignature = razorpaySignature;
+
+  const order = await Order.findOneAndUpdate(
+    { orderId: razorpayOrderId, paymentStatus: { $ne: "Paid" } },
+    update,
+    { new: true }
+  ).populate("userId");
+
+  if (!order) {
+    // Either no such order, or it was already marked Paid by whichever of
+    // verifyPayment/the webhook got here first — side effects already ran
+    // there either way, so this call is done.
+    return await Order.findOne({ orderId: razorpayOrderId });
+  }
+
+  const user = order.userId as any;
+  const customerName = user?.name;
+  const customerPhone = user?.mobile;
+
+  if (order.coupon) {
+    await markCouponUsed(order.coupon);
+  }
+
+  if (customerPhone) {
+    await sendOrderConfirmation(customerPhone, customerName, razorpayOrderId);
+    await sendAdminOrderConfirmationPayload(customerName, customerPhone, razorpayOrderId, order.total as any, order.date as any);
+  }
+
+  await notifyByKey("payment.success", {
+    entityId: order.orderId,
+    payload: { amount: order.total, paymentId: razorpayPaymentId },
+    req,
+  });
+
+  return order;
+}
+
+// =========================================================
 // 2️⃣ VERIFY PAYMENT SIGNATURE (MOST IMPORTANT)
 // =========================================================
 export const verifyPayment = async (req: Request, res: Response) => {
@@ -174,61 +228,73 @@ export const verifyPayment = async (req: Request, res: Response) => {
       });
     }
 
-    // 2️⃣ Fetch Order + Populate User
-    const order = await Order.findOne({ orderId: razorpay_order_id }).populate("userId");
-
+    const order = await markOrderPaid(razorpay_order_id, razorpay_payment_id, razorpay_signature, req);
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    // Idempotency: a retried/duplicated call with the same (still valid)
-    // signature would otherwise re-send both WhatsApp confirmations and
-    // double-count the coupon's usedCount on every repeat.
-    if (order.paymentStatus === "Paid") {
-      return res.json({ success: true, order });
-    }
-
-    // Type fix here:
-    const user = order.userId as any;
-
-    const customerName = user.name;
-    const customerPhone = user.mobile;
-
-    // 3️⃣ Update the order payment status
-    order.paymentStatus = "Paid";
-    order.status = "Processing";
-    order.razorpayPaymentId = razorpay_payment_id;
-    order.razorpaySignature = razorpay_signature;
-    order.paidAt = new Date();
-    await order.save();
-
-    // Coupon only actually counts as "used" once payment is confirmed —
-    // createOrder validates it, but abandoning the Razorpay popup before
-    // paying shouldn't burn a redemption.
-    if (order.coupon) {
-      await markCouponUsed(order.coupon);
-    }
-
-    // 5️⃣ Send WhatsApp Order Confirmation
-    await sendOrderConfirmation(customerPhone, customerName, razorpay_order_id);
-    await sendAdminOrderConfirmationPayload(customerName, customerPhone, razorpay_order_id, order.total as any, order.date as any);
-
-    // 🔔 EVENT EMITTED HERE
-    await notifyByKey("payment.success", {
-      entityId: order.orderId,
-      payload: {
-        amount: order.total,
-        paymentId: razorpay_payment_id
-      },
-      req
-    });
-
-    // 6️⃣ Return the updated order 
     res.json({ success: true, order });
-
   } catch (err: any) {
     console.error(err);
     res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// =========================================================
+// RAZORPAY WEBHOOK — server-to-server payment confirmation
+// =========================================================
+// Configure in Razorpay Dashboard > Settings > Webhooks: URL
+// https://lapshark.com/api/orders/webhook, events "payment.captured" (and
+// optionally "order.paid"), secret = RAZORPAY_WEBHOOK_SECRET below.
+//
+// Exists because verifyPayment alone has a gap: it only runs if the
+// customer's browser successfully calls it after Razorpay's checkout.js
+// reports success. If the tab closes, the connection drops, or that JS
+// callback fails for any reason right after a real successful charge, the
+// order was left stuck "Pending" forever with no way to notice the
+// customer had actually paid. This route is Razorpay's own server telling
+// us directly, independent of the customer's browser.
+export const razorpayWebhook = async (req: Request, res: Response) => {
+  try {
+    const signature = req.headers["x-razorpay-signature"] as string | undefined;
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const rawBody: Buffer | undefined = (req as any).rawBody;
+
+    if (!secret) {
+      console.error("RAZORPAY_WEBHOOK_SECRET not configured — rejecting webhook");
+      return res.status(500).json({ message: "Webhook not configured" });
+    }
+    if (!signature || !rawBody) {
+      return res.status(400).json({ message: "Missing signature or body" });
+    }
+
+    // Verified against the exact raw bytes Razorpay sent — see server.ts's
+    // express.json({ verify }) for why rawBody exists.
+    const expectedSignature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+    if (expectedSignature !== signature) {
+      return res.status(400).json({ message: "Invalid webhook signature" });
+    }
+
+    const event = req.body.event;
+    if (event === "payment.captured" || event === "order.paid") {
+      const paymentEntity = req.body.payload?.payment?.entity;
+      const orderEntity = req.body.payload?.order?.entity;
+      const razorpayOrderId = paymentEntity?.order_id || orderEntity?.id;
+      const razorpayPaymentId = paymentEntity?.id;
+
+      if (razorpayOrderId) {
+        await markOrderPaid(razorpayOrderId, razorpayPaymentId, undefined, req);
+      }
+    }
+
+    // Razorpay expects a fast 2xx for any event we don't act on too —
+    // otherwise it retries the same delivery on a backoff schedule.
+    return res.status(200).json({ received: true });
+  } catch (err: any) {
+    console.error("Webhook error:", err);
+    // Still 200: our own bug here shouldn't make Razorpay hammer retries
+    // for an event that already failed once — errors are visible in logs.
+    return res.status(200).json({ received: true, error: true });
   }
 };
 

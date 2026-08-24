@@ -15,7 +15,17 @@ connectDB();
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.use(cors());
-app.use(express.json());
+app.use(express.json({
+  // Razorpay's webhook signature is computed over the exact raw bytes it
+  // sent — verifying against a re-serialized req.body wouldn't reliably
+  // match (key order/whitespace aren't guaranteed identical). Stashing the
+  // raw buffer here on every request is cheap and lets the webhook route
+  // live normally in routes/api.ts instead of needing its own express.raw()
+  // wired in ahead of this middleware.
+  verify: (req: any, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 
 app.use((req, res, next) => {
   console.log(`${req.method} ${req.url}`);
