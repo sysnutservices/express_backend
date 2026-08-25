@@ -10,6 +10,7 @@ import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import * as ekart from "../services/ekart";
+import BehaviorEvent from "../models/BehaviorEvent";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
@@ -244,6 +245,31 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     payload: { amount: order.total, paymentId: razorpayPaymentId },
     req,
   });
+
+  // Server-side `purchase` tracking event — this branch only runs once per
+  // order (the findOneAndUpdate guard above), whether verifyPayment or the
+  // webhook got here first, so it inherits that idempotency for free rather
+  // than needing its own. No visitorId/sessionId here (no client session on
+  // this code path) — the admin Journey view attributes it via userId once
+  // the visitor is identified. Never let a tracking failure block a real
+  // payment confirmation.
+  try {
+    await BehaviorEvent.create({
+      eventName: "purchase",
+      visitorId: null,
+      sessionId: null,
+      userId: order.userId || undefined,
+      properties: {
+        orderId: order.orderId,
+        total: order.total,
+        paymentMethod: order.paymentMethod,
+        itemCount: order.items?.length || 0,
+      },
+      source: "server",
+    });
+  } catch (err: any) {
+    console.error("purchase tracking event failed:", err.message);
+  }
 
   return order;
 }
@@ -627,6 +653,20 @@ export const sendLoanEnquiry = async (req: Request, res: Response) => {
     }
 
     await LoanEnquiry.create({ phone });
+
+    // Server-side `generate_lead` event — the one real EMI-interest signal,
+    // since the EMI banner is a page-level offer, not tied to a product.
+    try {
+      await BehaviorEvent.create({
+        eventName: "generate_lead",
+        visitorId: null,
+        sessionId: null,
+        properties: { phone, source: "emi_banner" },
+        source: "server",
+      });
+    } catch (err: any) {
+      console.error("generate_lead tracking event failed:", err.message);
+    }
 
     await sendAdminLoanEnquiryPayload(phone);
 

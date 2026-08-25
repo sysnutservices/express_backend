@@ -5,6 +5,7 @@ import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, up
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
+import { ingestEvent, getOverviewStats, getVisitors, getVisitorJourney } from '../controllers/analyticsController';
 import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, deleteBlog } from '../controllers/blogController';
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
@@ -95,6 +96,16 @@ router.post('/users/address/:addressId/set-default', protect, setDefaultAddress)
 router.route('/coupons').get(protect, admin, getCoupons).post(protect, admin, createCoupon);
 router.route('/coupons/:id').put(protect, admin, updateCoupon).delete(protect, admin, deleteCoupon);
 router.route('/coupons/validate').post(validateCoupon);
+
+// Analytics
+// Deliberately public (no protect) — protect 401s outright on a missing
+// token, which would break tracking for every anonymous (not-logged-in)
+// visitor. ingestEvent does its own best-effort, swallowed-on-failure JWT
+// decode internally instead — see analyticsController.ts.
+router.post('/analytics/events', ingestEvent);
+router.get('/admin/analytics/overview', protect, admin, getOverviewStats);
+router.get('/admin/analytics/visitors', protect, admin, getVisitors);
+router.get('/admin/analytics/visitors/:visitorId', protect, admin, getVisitorJourney);
 // Admin / Site Config
 router.get('/admin/stats', protect, admin, getDashboardStats);
 router.route('/admin/site-config').get(getSiteConfig).put(protect, admin, updateSiteConfig);
