@@ -11,6 +11,7 @@ import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
+import { sendCapiEvent } from "../services/metaCapi";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
@@ -52,7 +53,8 @@ export const createOrder = async (req: Request, res: Response) => {
       mapLink,
       shippingAddress,
       paymentMethod,
-      coupon
+      coupon,
+      metaEventId
     } = req.body;
 
     const userId = (req as any).user?.id || null;
@@ -160,6 +162,7 @@ export const createOrder = async (req: Request, res: Response) => {
       date: new Date().toISOString(),   // FIXED
       total,
       advanceAmount,
+      metaEventId: typeof metaEventId === "string" ? metaEventId : undefined,
       mapLink: mapLink,
       status: "Pending",
       paymentStatus: "Pending",
@@ -269,6 +272,33 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     });
   } catch (err: any) {
     console.error("purchase tracking event failed:", err.message);
+  }
+
+  // Meta Conversions API — server truth for the Purchase conversion. Uses
+  // the same metaEventId the browser's Pixel Purchase call carries (set at
+  // checkout, see CheckoutContent.tsx) so Meta dedupes the two into one
+  // conversion instead of double-counting. No-ops entirely if
+  // META_PIXEL_ID/META_CAPI_ACCESS_TOKEN aren't configured — never blocks
+  // payment confirmation on a failure here.
+  try {
+    await sendCapiEvent({
+      eventName: "Purchase",
+      eventId: order.metaEventId,
+      eventSourceUrl: `https://lapshark.com/order-success/${order.orderId}`,
+      userData: {
+        email: order.customerEmail || undefined,
+        phone: order.shippingAddress?.phone,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"] as string | undefined,
+      },
+      customData: {
+        value: order.total,
+        currency: "INR",
+        contents: (order.items || []).map((i: any) => ({ id: i.productId, quantity: i.quantity })),
+      },
+    });
+  } catch (err: any) {
+    console.error("Meta CAPI purchase event failed:", err.message);
   }
 
   return order;
@@ -666,6 +696,23 @@ export const sendLoanEnquiry = async (req: Request, res: Response) => {
       });
     } catch (err: any) {
       console.error("generate_lead tracking event failed:", err.message);
+    }
+
+    // Meta CAPI — server-only, no browser Pixel counterpart for this one
+    // (the EMI form has no client-side trackEvent call), so there's nothing
+    // to dedupe against and no eventId needed.
+    try {
+      await sendCapiEvent({
+        eventName: "Lead",
+        eventSourceUrl: "https://lapshark.com/",
+        userData: {
+          phone,
+          ip: req.ip,
+          userAgent: req.headers["user-agent"] as string | undefined,
+        },
+      });
+    } catch (err: any) {
+      console.error("Meta CAPI lead event failed:", err.message);
     }
 
     await sendAdminLoanEnquiryPayload(phone);

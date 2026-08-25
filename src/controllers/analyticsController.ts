@@ -5,9 +5,19 @@ import Session from "../models/Session";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { isAllowedEvent } from "../utils/analyticsEvents";
 import { calculateIntentScore, scoreToLevel } from "../services/intentScore";
+import { sendCapiEvent } from "../services/metaCapi";
 
 const UUID_LIKE = /^[0-9a-f-]{20,40}$/i;
 const FUNNEL_EVENTS = ["page_view", "view_item", "add_to_cart", "begin_checkout", "purchase"];
+
+// Only these three have a browser-side Meta Pixel counterpart worth
+// deduping server-side — purchase/generate_lead are forwarded separately
+// from orderController.ts, where the richer order/lead data actually lives.
+const CAPI_EVENT_MAP: Record<string, "ViewContent" | "AddToCart" | "InitiateCheckout"> = {
+  view_item: "ViewContent",
+  add_to_cart: "AddToCart",
+  begin_checkout: "InitiateCheckout",
+};
 
 // =========================================================
 // INGEST — POST /analytics/events
@@ -18,7 +28,7 @@ const FUNNEL_EVENTS = ["page_view", "view_item", "add_to_cart", "begin_checkout"
 // boundary is the eventName allowlist, not who's calling.
 export const ingestEvent = async (req: Request, res: Response) => {
   try {
-    const { eventName, visitorId, sessionId, userId: bodyUserId, properties, page, utm, referrer } = req.body;
+    const { eventName, visitorId, sessionId, eventId, userId: bodyUserId, properties, page, utm, referrer } = req.body;
 
     if (!isAllowedEvent(eventName)) {
       return res.status(400).json({ message: "Unknown event" });
@@ -28,6 +38,9 @@ export const ingestEvent = async (req: Request, res: Response) => {
     }
     if (sessionId !== undefined && (typeof sessionId !== "string" || !UUID_LIKE.test(sessionId))) {
       return res.status(400).json({ message: "Invalid sessionId" });
+    }
+    if (eventId !== undefined && (typeof eventId !== "string" || !UUID_LIKE.test(eventId))) {
+      return res.status(400).json({ message: "Invalid eventId" });
     }
 
     let cleanProperties: Record<string, unknown> = {};
@@ -142,6 +155,34 @@ export const ingestEvent = async (req: Request, res: Response) => {
     if (visitorId) {
       const score = await calculateIntentScore(visitorId);
       await Visitor.updateOne({ visitorId }, { $set: { intentScore: score, intentLevel: scoreToLevel(score) } });
+    }
+
+    // Meta CAPI echo for the 3 commerce events that have a browser Pixel
+    // counterpart (see CAPI_EVENT_MAP) — same eventId the client's fbq()
+    // call used, so Meta dedupes rather than double-counting. No-ops if
+    // Meta isn't configured; never blocks the response either way.
+    const capiEventName = CAPI_EVENT_MAP[eventName as string];
+    if (capiEventName) {
+      try {
+        await sendCapiEvent({
+          eventName: capiEventName,
+          eventId,
+          eventSourceUrl: cleanPage.url,
+          userData: {
+            ip: req.ip,
+            userAgent: req.headers["user-agent"] as string | undefined,
+          },
+          customData: {
+            content_ids: cleanProperties.productId ? [cleanProperties.productId] : undefined,
+            value: (cleanProperties.finalPrice ?? cleanProperties.price ?? cleanProperties.finalTotal) as
+              | number
+              | undefined,
+            currency: "INR",
+          },
+        });
+      } catch (err: any) {
+        console.error("Meta CAPI event failed:", err.message);
+      }
     }
 
     // sendBeacon callers can't read a response body anyway — 202 with no
