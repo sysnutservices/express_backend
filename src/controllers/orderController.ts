@@ -9,12 +9,35 @@ import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrd
 import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
+import * as ekart from "../services/ekart";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
   key_secret: process.env.RAZORPAY_SECRET!,
 });
 
+
+// =========================================================
+// PINCODE SERVICEABILITY — checkout UX guardrail, not an authority
+// =========================================================
+// Called from the checkout address step, before payment, so a customer in an
+// area Ekart can't reach finds out before paying instead of after (the
+// previous failure mode: shipment creation fails post-payment, admin sorts
+// it out manually). Not a trust boundary — createOrder/updateOrderStatus
+// don't rely on this having been called, so there's nothing to enforce here
+// beyond input shape.
+export const checkPincodeServiceability = async (req: Request, res: Response) => {
+  try {
+    const { pincode } = req.params;
+    if (!/^\d{6}$/.test(pincode)) {
+      return res.status(400).json({ success: false, message: "Invalid pincode" });
+    }
+    const result = await ekart.checkServiceability(pincode);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
 // =========================================================
 // 1️⃣ CREATE ORDER (Internal + Razorpay Order)
@@ -103,9 +126,26 @@ export const createOrder = async (req: Request, res: Response) => {
       total = couponResult.finalAmount;
     }
 
+    // ---- COD advance ----
+    // COD still runs through Razorpay for a small upfront amount — full cash
+    // on delivery invites no-shows/fake orders, ₹500 up front weeds those
+    // out while leaving the rest genuinely COD. If the order is cheaper than
+    // the advance itself (heavy coupon, low-value item) there's nothing
+    // meaningful left for COD, so it's just charged in full instead.
+    // ponytail: flat ₹500, not configurable — make it an env var if it ever
+    // needs to vary by order value/category.
+    const COD_ADVANCE_AMOUNT = 500;
+    const isCOD = paymentMethod === "COD";
+    const amountToCharge = isCOD ? (total > COD_ADVANCE_AMOUNT ? COD_ADVANCE_AMOUNT : total) : total;
+    // advanceAmount always equals what's actually being charged right now —
+    // in the small-order edge case above that's the full total, so the
+    // courier-facing "cash still owed" (total - advanceAmount, see
+    // updateOrderStatus) correctly comes out to 0 instead of double-charging.
+    const advanceAmount = isCOD ? amountToCharge : 0;
+
     // ---- Create Razorpay Order ----
     const razorpayOrder = await razorpay.orders.create({
-      amount: total * 100, // convert to paisa
+      amount: amountToCharge * 100, // convert to paisa
       currency: "INR",
       receipt: "order_" + Date.now()
     });
@@ -118,6 +158,7 @@ export const createOrder = async (req: Request, res: Response) => {
       userId,
       date: new Date().toISOString(),   // FIXED
       total,
+      advanceAmount,
       mapLink: mapLink,
       status: "Pending",
       paymentStatus: "Pending",
@@ -140,7 +181,7 @@ export const createOrder = async (req: Request, res: Response) => {
       success: true,
       order: newOrder,
       razorpayOrderId: razorpayOrder.id,
-      amount: total * 100,
+      amount: amountToCharge * 100,
       key: process.env.RAZORPAY_KEY
     });
   } catch (err: any) {
@@ -300,6 +341,73 @@ export const razorpayWebhook = async (req: Request, res: Response) => {
 
 
 // =========================================================
+// EKART SHIPMENT WEBHOOK — courier status updates
+// =========================================================
+// Same shape as razorpayWebhook above: Ekart's own server calling us, so no
+// `protect` — authenticated by verifying its signature against the raw body
+// instead (server.ts's express.json({ verify }) captures req.rawBody for
+// this). ⚠️ Header name and payload field names (awb/status) are placeholders
+// pending Ekart's actual webhook doc — check both against it before relying
+// on this in production; see services/ekart.ts's header comment for why.
+const EKART_STATUS_MAP: Record<string, string> = {
+  picked_up: "Shipped",
+  in_transit: "Shipped",
+  out_for_delivery: "Out for Delivery",
+  delivered: "Delivered",
+  rto: "RTO",
+  rto_delivered: "RTO",
+};
+
+export const shipmentWebhook = async (req: Request, res: Response) => {
+  try {
+    const signature = req.headers["x-ekart-signature"] as string | undefined;
+    const secret = process.env.EKART_WEBHOOK_SECRET;
+    const rawBody: Buffer | undefined = (req as any).rawBody;
+
+    if (!secret) {
+      console.error("EKART_WEBHOOK_SECRET not configured — rejecting webhook");
+      return res.status(500).json({ message: "Webhook not configured" });
+    }
+    if (!signature || !rawBody) {
+      return res.status(400).json({ message: "Missing signature or body" });
+    }
+
+    const expectedSignature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+    if (expectedSignature !== signature) {
+      return res.status(400).json({ message: "Invalid webhook signature" });
+    }
+
+    const awb = req.body.awb || req.body.waybill;
+    const courierStatus = req.body.status;
+    const mappedStatus = EKART_STATUS_MAP[courierStatus];
+
+    if (awb && mappedStatus) {
+      const update: Record<string, unknown> = {
+        status: mappedStatus,
+        "shipment.courierStatus": courierStatus,
+      };
+      if (mappedStatus === "Delivered") update["shipment.deliveredAt"] = new Date();
+
+      const order = await Order.findOneAndUpdate({ "shipment.awb": awb }, update, { new: true });
+      if (order) {
+        await notifyByKey("shipment.updated", {
+          entityId: order.orderId,
+          payload: { status: mappedStatus, awb },
+          req,
+        });
+      }
+    }
+
+    // Same reasoning as razorpayWebhook: fast 2xx for events we don't act on
+    // too, so Ekart doesn't retry-storm a delivery we've already seen.
+    return res.status(200).json({ received: true });
+  } catch (err: any) {
+    console.error("Ekart webhook error:", err);
+    return res.status(200).json({ received: true, error: true });
+  }
+};
+
+// =========================================================
 // 3️⃣ GET USER ORDERS
 // =========================================================
 export const getUserOrders = async (req: Request, res: Response) => {
@@ -360,15 +468,67 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     const { status } = req.body;
     const { id } = req.params; // this is orderId, not _id
 
-    const order = await Order.findOneAndUpdate(
-      { orderId: id },   // ⭐ FIND USING orderId
-      { status },
-      { new: true }
-    );
-
+    const order = await Order.findOne({ orderId: id }); // ⭐ FIND USING orderId
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
+
+    // Moving to Shipped books the actual courier shipment — gated on no AWB
+    // existing yet so re-clicking "Shipped" (or the admin re-saving) doesn't
+    // book a second one for the same order.
+    if (status === "Shipped" && !order.shipment?.awb) {
+      const productIds = order.items.map((i: any) => i.productId);
+      const products = await Product.find({ _id: { $in: productIds } });
+
+      // ponytail: sums real per-item weight but packs the whole order into
+      // one box sized to the single largest item's dims rather than actually
+      // bin-packing — fine for the common 1-2 laptop order, revisit if
+      // multi-item orders needing real box-packing become common.
+      let totalWeightKg = 0;
+      let dims = { length: 35, width: 25, height: 8 };
+      let maxVolume = 0;
+      for (const item of order.items as any[]) {
+        const product = products.find((p) => p._id.toString() === item.productId?.toString());
+        const weight = product?.weightKg ?? 2.5;
+        totalWeightKg += weight * item.quantity;
+        const l = product?.lengthCm ?? 35, w = product?.widthCm ?? 25, h = product?.heightCm ?? 8;
+        const volume = l * w * h;
+        if (volume > maxVolume) {
+          maxVolume = volume;
+          dims = { length: l, width: w, height: h };
+        }
+      }
+
+      try {
+        const shipment = await ekart.createShipment({
+          orderId: order.orderId,
+          customerName: order.customerName,
+          shippingAddress: order.shippingAddress as any,
+          total: order.total,
+          paymentMethod: order.paymentMethod,
+          codAmount: order.total - (order.advanceAmount || 0),
+          items: order.items as any,
+          totalWeightKg,
+          dimsCm: dims,
+        });
+        order.shipment = {
+          awb: shipment.awb,
+          labelUrl: shipment.labelUrl,
+          trackingUrl: shipment.trackingUrl,
+          shippedAt: new Date(),
+        };
+      } catch (shipErr: any) {
+        console.error("Ekart shipment creation failed:", shipErr.response?.data || shipErr.message);
+        return res.status(502).json({
+          success: false,
+          message: "Could not create courier shipment. Order status left unchanged — retry once the courier issue is resolved.",
+        });
+      }
+    }
+
+    order.status = status;
+    if (status === "Delivered" && order.shipment) order.shipment.deliveredAt = new Date();
+    await order.save();
 
     res.json({ success: true, order });
   } catch (err: any) {
@@ -391,8 +551,54 @@ export const cancelOrder = async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Not authorized to cancel this order" });
     }
 
+    // Idempotent: re-cancelling an already-cancelled order (double-click,
+    // retried request) must not re-fire the courier cancel or, worse,
+    // refund the advance a second time.
+    if (order.status === "Cancelled") {
+      return res.json({ success: true, order });
+    }
+
+    if (order.shipment?.awb) {
+      try {
+        await ekart.cancelShipment(order.shipment.awb);
+      } catch (err: any) {
+        // Best-effort: a courier-side cancel failure (already picked up, API
+        // hiccup) shouldn't block cancelling the order on our side — logged
+        // so it can be cancelled manually via the Ekart dashboard if needed.
+        console.error("Ekart shipment cancel failed:", err.response?.data || err.message);
+      }
+    }
+
+    // COD advance refund — the ₹500 (or less, see createOrder's small-order
+    // edge case) already charged via Razorpay to confirm the order. A fully
+    // prepaid (non-COD) order is the whole order value, not a small
+    // pre-payment, and isn't auto-refunded here — that stays a manual
+    // Razorpay-dashboard action, unchanged from before.
+    if (order.paymentMethod === "COD" && order.paymentStatus === "Paid" && order.advanceAmount > 0 && order.razorpayPaymentId) {
+      try {
+        const refund = await razorpay.payments.refund(order.razorpayPaymentId, {
+          amount: order.advanceAmount * 100,
+          speed: "optimum",
+        });
+        order.refund = {
+          id: refund.id,
+          amount: order.advanceAmount,
+          status: refund.status,
+          refundedAt: new Date(),
+        };
+        order.paymentStatus = "Refunded";
+      } catch (err: any) {
+        // Not best-effort-and-forget like the shipment cancel above: this is
+        // money that didn't come back, so it's recorded as a failed refund
+        // (surfaced in the admin order view) rather than silently left as
+        // "Paid", which would read as nothing being owed to the customer.
+        console.error("Razorpay advance refund failed:", err.error || err.message);
+        order.refund = { amount: order.advanceAmount, status: "failed" };
+      }
+    }
+
     order.status = "Cancelled";
-    order.paymentStatus = "Failed";
+    if (order.paymentStatus !== "Refunded") order.paymentStatus = "Failed";
 
     await order.save();
 

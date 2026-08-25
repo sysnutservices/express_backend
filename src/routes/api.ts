@@ -1,6 +1,6 @@
 import express from 'express';
 import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage } from '../controllers/productController';
-import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
 import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
@@ -67,6 +67,11 @@ router.get("/orders/:id", protect, getOrderById);
 router.get("/orders/", protect, admin, adminGetAllOrders);
 router.put("/orders/:id/status", protect, admin, updateOrderStatus);
 router.put("/orders/:id/cancel", protect, cancelOrder);
+
+// Pincode check at the checkout address step — public, no order/user context needed.
+router.get("/shipping/serviceability/:pincode", checkPincodeServiceability);
+// Ekart's own server calls this — see shipmentWebhook's comment for why no protect.
+router.post("/orders/shipment-webhook", shipmentWebhook);
 
 // Site Config
 router.get('/site-config', publicCache, getSiteConfig);

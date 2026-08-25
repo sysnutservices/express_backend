@@ -157,6 +157,10 @@ export const createProduct = async (req: Request, res: Response) => {
       rating: Number(req.body.rating || 0),
       reviews: Number(req.body.reviews || 0),
       finalPrice: Number(req.body.finalPrice),
+      weightKg: req.body.weightKg !== undefined ? Number(req.body.weightKg) : undefined,
+      lengthCm: req.body.lengthCm !== undefined ? Number(req.body.lengthCm) : undefined,
+      widthCm: req.body.widthCm !== undefined ? Number(req.body.widthCm) : undefined,
+      heightCm: req.body.heightCm !== undefined ? Number(req.body.heightCm) : undefined,
       image: mainImage,
       images: galleryImages,
       specs: req.body.specs ? JSON.parse(req.body.specs) : {},
@@ -290,6 +294,10 @@ export const updateProduct = async (req: Request, res: Response) => {
     if (req.body.finalPrice !== undefined) product.finalPrice = Number(req.body.finalPrice);
     if (req.body.rating !== undefined) product.rating = Number(req.body.rating);
     if (req.body.reviews !== undefined) product.reviews = Number(req.body.reviews);
+    if (req.body.weightKg !== undefined) product.weightKg = Number(req.body.weightKg);
+    if (req.body.lengthCm !== undefined) product.lengthCm = Number(req.body.lengthCm);
+    if (req.body.widthCm !== undefined) product.widthCm = Number(req.body.widthCm);
+    if (req.body.heightCm !== undefined) product.heightCm = Number(req.body.heightCm);
 
     //
     // 5️⃣ Boolean fields
