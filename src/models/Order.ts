@@ -7,6 +7,10 @@ export interface IOrder extends Document {
   userId?: mongoose.Schema.Types.ObjectId;
   date: string;
   total: number;
+  // COD orders charge this much upfront via Razorpay (to weed out
+  // fake/careless COD orders) and leave (total - advanceAmount) to be
+  // collected as cash by the courier. 0 for a fully-prepaid order.
+  advanceAmount: number;
   couponValue: number;
   coupon: string | null; // ✅ ADD THIS
   status: string;
@@ -35,6 +39,20 @@ export interface IOrder extends Document {
     selectedConfig?: any; // ✅ ADD THIS
   }>;
   paidAt?: Date; // ✅ ADD THIS
+  shipment?: {
+    awb?: string;
+    courierStatus?: string;
+    labelUrl?: string;
+    trackingUrl?: string;
+    shippedAt?: Date;
+    deliveredAt?: Date;
+  };
+  refund?: {
+    id?: string;
+    amount?: number;
+    status?: string; // Razorpay's 'pending' | 'processed' | 'failed'
+    refundedAt?: Date;
+  };
 }
 
 const AddressSubSchema = new Schema(
@@ -59,6 +77,7 @@ const OrderSchema = new Schema(
     coupon: { type: String, default: null }, // ✅ ADD THIS
     date: { type: String, required: true },
     total: { type: Number, required: true },
+    advanceAmount: { type: Number, default: 0 },
     mapLink: { type: String, default: "" },
     razorpayOrderId: { type: String, required: true },
     razorpayPaymentId: { type: String, default: "" },
@@ -67,13 +86,29 @@ const OrderSchema = new Schema(
 
     status: {
       type: String,
-      enum: ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
+      enum: ["Pending", "Processing", "Shipped", "Out for Delivery", "Delivered", "Cancelled", "RTO"],
       default: "Pending",
+    },
+
+    shipment: {
+      awb: { type: String },
+      courierStatus: { type: String },
+      labelUrl: { type: String },
+      trackingUrl: { type: String },
+      shippedAt: { type: Date },
+      deliveredAt: { type: Date },
+    },
+
+    refund: {
+      id: { type: String },
+      amount: { type: Number },
+      status: { type: String },
+      refundedAt: { type: Date },
     },
 
     paymentStatus: {
       type: String,
-      enum: ["Paid", "Pending", "Failed"],
+      enum: ["Paid", "Pending", "Failed", "Refunded"],
       default: "Pending",
     },
 

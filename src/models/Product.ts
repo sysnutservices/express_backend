@@ -27,6 +27,15 @@ export interface IProduct extends Document {
   isBestDeal: boolean;
   condition: string;
 
+  // Shipping package dims for Ekart rate/serviceability + shipment creation.
+  // Defaulted to a typical boxed-laptop parcel so existing/new products ship
+  // correctly with zero admin input; override per-product when it matters
+  // (heavier workstations, accessories, etc).
+  weightKg: number;
+  lengthCm: number;
+  widthCm: number;
+  heightCm: number;
+
   configOptions: {
     ram: IConfigOption[];
     storage: IConfigOption[];
@@ -117,6 +126,11 @@ const ProductSchema: Schema<IProduct> = new Schema(
       type: String,
       default: "Excellent",
     },
+
+    weightKg: { type: Number, default: 2.5 },
+    lengthCm: { type: Number, default: 35 },
+    widthCm: { type: Number, default: 25 },
+    heightCm: { type: Number, default: 8 },
 
     // ⭐ Added CONFIG inside product
     configOptions: {
