@@ -5,7 +5,7 @@ import Session from "../models/Session";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { isAllowedEvent } from "../utils/analyticsEvents";
 import { calculateIntentScore, scoreToLevel } from "../services/intentScore";
-import { sendCapiEvent } from "../services/metaCapi";
+import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 
 const UUID_LIKE = /^[0-9a-f-]{20,40}$/i;
 const FUNNEL_EVENTS = ["page_view", "view_item", "add_to_cart", "begin_checkout", "purchase"];
@@ -171,6 +171,7 @@ export const ingestEvent = async (req: Request, res: Response) => {
           userData: {
             ip: req.ip,
             userAgent: req.headers["user-agent"] as string | undefined,
+            ...parseFbCookies(req.headers.cookie),
           },
           customData: {
             content_ids: cleanProperties.productId ? [cleanProperties.productId] : undefined,

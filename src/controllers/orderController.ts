@@ -11,7 +11,7 @@ import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
-import { sendCapiEvent } from "../services/metaCapi";
+import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY!,
@@ -290,6 +290,12 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
         phone: order.shippingAddress?.phone,
         ip: req.ip,
         userAgent: req.headers["user-agent"] as string | undefined,
+        // Only present when markOrderPaid runs off verifyPayment (a real
+        // browser request) — absent on the webhook path, which is
+        // Razorpay's server calling us with no cookie jar of its own.
+        // parseFbCookies(undefined) just returns {}, so this degrades
+        // gracefully either way.
+        ...parseFbCookies(req.headers.cookie),
       },
       customData: {
         value: order.total,
@@ -709,6 +715,7 @@ export const sendLoanEnquiry = async (req: Request, res: Response) => {
           phone,
           ip: req.ip,
           userAgent: req.headers["user-agent"] as string | undefined,
+          ...parseFbCookies(req.headers.cookie),
         },
       });
     } catch (err: any) {
