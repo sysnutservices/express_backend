@@ -19,10 +19,10 @@ const TEMPLATE_IDS = {
     adminLoanAlert: process.env.WHATSAPP_SAAS_ADMIN_LOAN_ALERT_TEMPLATE_ID || "9cd3e598-3311-4b54-a1cd-684893b22e3c",
 };
 
-async function sendTemplate(templateId: string, to: string, params: string[]) {
+async function sendTemplate(templateId: string, to: string, params: string[], tags?: string[]) {
     const response = await axios.post(
         `${WHATSAPP_SAAS_API_URL}/templates/${templateId}/send`,
-        { to, params },
+        { to, params, ...(tags ? { tags } : {}) },
         {
             headers: {
                 Authorization: `Bearer ${WHATSAPP_SAAS_API_KEY}`,
@@ -35,7 +35,10 @@ async function sendTemplate(templateId: string, to: string, params: string[]) {
 
 export async function sendOtp(to: string, otp: string) {
     try {
-        return await sendTemplate(TEMPLATE_IDS.otp, to, [otp]);
+        // Auto-tags the contact on chat.lapshark.com so a website
+        // OTP-verification lead is identifiable/filterable in the Contacts
+        // page, same as any other CRM tag.
+        return await sendTemplate(TEMPLATE_IDS.otp, to, [otp], ["otp-verification"]);
     } catch (error: any) {
         console.error("WhatsApp OTP Error:", error.response?.data || error);
         throw error;
