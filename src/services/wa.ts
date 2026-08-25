@@ -19,10 +19,31 @@ const TEMPLATE_IDS = {
     adminLoanAlert: process.env.WHATSAPP_SAAS_ADMIN_LOAN_ALERT_TEMPLATE_ID || "9cd3e598-3311-4b54-a1cd-684893b22e3c",
 };
 
+// WhatsApp's Cloud API always reports an inbound sender with the country
+// code (e.g. "917760772043"), but our own outbound callers (the OTP form's
+// bare 10-digit validation, ADMIN_PHONE_NUMBER, a customer's stored
+// `mobile`) never carry one — mismatched on chat.lapshark.com's side, each
+// format created its own separate Contact/Conversation for the same real
+// person. Every sendX below funnels through here, so normalizing once at
+// this single point covers all of them instead of fixing (or missing, as
+// cartController.ts's `91${mobile}` line by itself did) each call site.
+function normalizeIndianMobile(to: string): string {
+    return /^\d{10}$/.test(to) ? `91${to}` : to;
+}
+
+// No test runner in this project — this file's own self-check, run with
+// `npx ts-node src/services/wa.ts`.
+if (require.main === module) {
+    console.assert(normalizeIndianMobile("7760772043") === "917760772043", "bare 10-digit should get 91 prefixed");
+    console.assert(normalizeIndianMobile("917760772043") === "917760772043", "already-prefixed number should pass through unchanged");
+    console.assert(normalizeIndianMobile("+917760772043") === "+917760772043", "a non-bare-digit format is left alone, not double-prefixed");
+    console.log("normalizeIndianMobile: all checks passed");
+}
+
 async function sendTemplate(templateId: string, to: string, params: string[], tags?: string[]) {
     const response = await axios.post(
         `${WHATSAPP_SAAS_API_URL}/templates/${templateId}/send`,
-        { to, params, ...(tags ? { tags } : {}) },
+        { to: normalizeIndianMobile(to), params, ...(tags ? { tags } : {}) },
         {
             headers: {
                 Authorization: `Bearer ${WHATSAPP_SAAS_API_KEY}`,
