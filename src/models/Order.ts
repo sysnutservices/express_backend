@@ -11,6 +11,11 @@ export interface IOrder extends Document {
   // fake/careless COD orders) and leave (total - advanceAmount) to be
   // collected as cash by the courier. 0 for a fully-prepaid order.
   advanceAmount: number;
+  // Client-generated at checkout, echoed by the browser's Meta Pixel
+  // Purchase call and reused server-side for the Meta CAPI Purchase call in
+  // markOrderPaid — the shared id is what lets Meta dedupe the two into one
+  // conversion instead of double-counting it.
+  metaEventId?: string;
   couponValue: number;
   coupon: string | null; // ✅ ADD THIS
   status: string;
@@ -78,6 +83,7 @@ const OrderSchema = new Schema(
     date: { type: String, required: true },
     total: { type: Number, required: true },
     advanceAmount: { type: Number, default: 0 },
+    metaEventId: { type: String },
     mapLink: { type: String, default: "" },
     razorpayOrderId: { type: String, required: true },
     razorpayPaymentId: { type: String, default: "" },
