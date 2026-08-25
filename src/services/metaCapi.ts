@@ -33,6 +33,30 @@ export interface CapiUserData {
   phone?: string;
   ip?: string;
   userAgent?: string;
+  // Meta's own first-party cookies (set by fbevents.js once the Pixel
+  // script loads). Sent as-is, unhashed — unlike email/phone, Meta's spec
+  // doesn't hash these. _fbp identifies the browser; _fbc only exists if
+  // the visitor arrived via an fbclid ad click. Either raises CAPI match
+  // quality meaningfully over IP+UA alone. Extract with parseFbCookies()
+  // from the request's raw Cookie header — same-origin requests to /api
+  // carry them automatically, no client-side plumbing needed.
+  fbp?: string;
+  fbc?: string;
+}
+
+// _fbp/_fbc live in the browser's cookie jar for lapshark.com, set by
+// Meta's own Pixel script — not something this app sets itself. Hand-rolled
+// instead of adding cookie-parser: two known cookie names, not a general
+// parsing need.
+export function parseFbCookies(cookieHeader?: string): { fbp?: string; fbc?: string } {
+  if (!cookieHeader) return {};
+  const cookies: Record<string, string> = {};
+  for (const pair of cookieHeader.split(";")) {
+    const idx = pair.indexOf("=");
+    if (idx === -1) continue;
+    cookies[pair.slice(0, idx).trim()] = decodeURIComponent(pair.slice(idx + 1).trim());
+  }
+  return { fbp: cookies["_fbp"], fbc: cookies["_fbc"] };
 }
 
 export interface CapiEventInput {
@@ -51,6 +75,8 @@ export async function sendCapiEvent(input: CapiEventInput): Promise<void> {
   if (input.userData.phone) user_data.ph = [sha256(normalizePhone(input.userData.phone))];
   if (input.userData.ip) user_data.client_ip_address = input.userData.ip;
   if (input.userData.userAgent) user_data.client_user_agent = input.userData.userAgent;
+  if (input.userData.fbp) user_data.fbp = input.userData.fbp;
+  if (input.userData.fbc) user_data.fbc = input.userData.fbc;
 
   await axios.post(
     `https://graph.facebook.com/${GRAPH_API_VERSION}/${META_PIXEL_ID}/events`,
