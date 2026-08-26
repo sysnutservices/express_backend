@@ -247,6 +247,85 @@ export const getOverviewStats = async (req: Request, res: Response) => {
 };
 
 // =========================================================
+// ADMIN: PRODUCT VIEWS BREAKDOWN — GET /admin/analytics/products?days=N
+// =========================================================
+// "Which products get looked at but don't convert" — the one insight this
+// exists for. Views/add-to-cart come straight off BehaviorEvent's
+// properties.productId (client events already carry it). Purchases come
+// from the server-side purchase event's properties.items array
+// (orderController.ts's markOrderPaid) — that's per-order, not per-product,
+// by default, which is why that write includes an items list instead of
+// just an item count.
+export const getProductAnalytics = async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(parseInt(String(req.query.days || "30"), 10) || 30, 1), 365);
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [viewsAndCarts, purchaseRows] = await Promise.all([
+      BehaviorEvent.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: since },
+            eventName: { $in: ["view_item", "add_to_cart"] },
+            "properties.productId": { $exists: true, $ne: null },
+          },
+        },
+        {
+          $group: {
+            _id: { productId: "$properties.productId", eventName: "$eventName" },
+            count: { $sum: 1 },
+            title: { $last: "$properties.title" },
+          },
+        },
+      ]),
+      BehaviorEvent.aggregate([
+        { $match: { createdAt: { $gte: since }, eventName: "purchase" } },
+        { $unwind: "$properties.items" },
+        {
+          $group: {
+            _id: "$properties.items.productId",
+            purchases: { $sum: { $ifNull: ["$properties.items.quantity", 1] } },
+          },
+        },
+      ]),
+    ]);
+
+    const products: Record<
+      string,
+      { productId: string; title: string; views: number; addToCart: number; purchases: number }
+    > = {};
+
+    for (const row of viewsAndCarts) {
+      const pid = row._id.productId;
+      if (!products[pid]) products[pid] = { productId: pid, title: row.title || pid, views: 0, addToCart: 0, purchases: 0 };
+      if (row.title) products[pid].title = row.title;
+      if (row._id.eventName === "view_item") products[pid].views = row.count;
+      if (row._id.eventName === "add_to_cart") products[pid].addToCart = row.count;
+    }
+
+    for (const row of purchaseRows) {
+      const pid = row._id;
+      if (!pid) continue;
+      if (!products[pid]) products[pid] = { productId: pid, title: pid, views: 0, addToCart: 0, purchases: 0 };
+      products[pid].purchases = row.purchases;
+    }
+
+    const list = Object.values(products)
+      .map((p) => ({
+        ...p,
+        cartConversionRate: p.views > 0 ? Number(((p.addToCart / p.views) * 100).toFixed(1)) : 0,
+        purchaseConversionRate: p.views > 0 ? Number(((p.purchases / p.views) * 100).toFixed(1)) : 0,
+      }))
+      .sort((a, b) => b.views - a.views);
+
+    res.json({ products: list });
+  } catch (error) {
+    console.error("getProductAnalytics error:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// =========================================================
 // ADMIN: VISITOR LIST — GET /admin/analytics/visitors?page=N
 // =========================================================
 export const getVisitors = async (req: Request, res: Response) => {
