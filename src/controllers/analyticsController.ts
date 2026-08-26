@@ -19,6 +19,24 @@ const CAPI_EVENT_MAP: Record<string, "ViewContent" | "AddToCart" | "InitiateChec
   begin_checkout: "InitiateCheckout",
 };
 
+// A populated User doc carries the full addressBook — this trims it down to
+// what the admin Visitors/Journey pages actually need (name/mobile/email
+// plus the pincode off their default address), so the full address book
+// (with street, phone-per-address, etc.) never leaves the server for what's
+// meant to be an at-a-glance view.
+function shapeCustomer(user: any) {
+  if (!user) return user;
+  const addr =
+    (user.addressBook || []).find((a: any) => a.id === user.defaultAddressId) || (user.addressBook || [])[0];
+  return {
+    _id: user._id,
+    name: user.name,
+    mobile: user.mobile,
+    email: user.email,
+    pincode: addr?.zip,
+  };
+}
+
 // =========================================================
 // INGEST — POST /analytics/events
 // =========================================================
@@ -338,12 +356,14 @@ export const getVisitors = async (req: Request, res: Response) => {
         .sort({ intentScore: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .populate("userId", "name mobile")
+        .populate("userId", "name mobile email addressBook defaultAddressId")
         .lean(),
       Visitor.countDocuments(),
     ]);
 
-    res.json({ visitors, total, page, limit });
+    const shaped = visitors.map((v: any) => ({ ...v, userId: shapeCustomer(v.userId) }));
+
+    res.json({ visitors: shaped, total, page, limit });
   } catch (error) {
     console.error("getVisitors error:", error);
     res.status(500).json({ message: "Server Error" });
@@ -356,7 +376,10 @@ export const getVisitors = async (req: Request, res: Response) => {
 export const getVisitorJourney = async (req: Request, res: Response) => {
   try {
     const { visitorId } = req.params;
-    const visitor = await Visitor.findOne({ visitorId }).populate("userId", "name mobile email");
+    const visitor = await Visitor.findOne({ visitorId }).populate(
+      "userId",
+      "name mobile email addressBook defaultAddressId"
+    );
     if (!visitor) {
       return res.status(404).json({ message: "Visitor not found" });
     }
@@ -365,7 +388,10 @@ export const getVisitorJourney = async (req: Request, res: Response) => {
 
     // Server-side events (purchase, generate_lead) carry no visitorId — once
     // this visitor is identified, pull those in by userId so a converted
-    // customer's journey reads as one continuous timeline, not two.
+    // customer's journey reads as one continuous timeline, not two. Uses
+    // the still-populated visitor.userId here (before shapeCustomer below
+    // replaces it with a trimmed plain object) — Mongoose casts a populated
+    // doc back to its ObjectId for the query correctly either way.
     let serverEvents: any[] = [];
     if (visitor.userId) {
       serverEvents = await BehaviorEvent.find({ userId: visitor.userId, visitorId: null })
@@ -377,7 +403,10 @@ export const getVisitorJourney = async (req: Request, res: Response) => {
       (a: any, b: any) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     );
 
-    res.json({ visitor, events });
+    const visitorObj: any = visitor.toObject();
+    visitorObj.userId = shapeCustomer(visitorObj.userId);
+
+    res.json({ visitor: visitorObj, events });
   } catch (error) {
     console.error("getVisitorJourney error:", error);
     res.status(500).json({ message: "Server Error" });
