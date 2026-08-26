@@ -5,7 +5,7 @@ import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, up
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
-import { ingestEvent, getOverviewStats, getVisitors, getVisitorJourney } from '../controllers/analyticsController';
+import { ingestEvent, getOverviewStats, getProductAnalytics, getVisitors, getVisitorJourney } from '../controllers/analyticsController';
 import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, deleteBlog } from '../controllers/blogController';
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
@@ -104,6 +104,7 @@ router.route('/coupons/validate').post(validateCoupon);
 // decode internally instead — see analyticsController.ts.
 router.post('/analytics/events', ingestEvent);
 router.get('/admin/analytics/overview', protect, admin, getOverviewStats);
+router.get('/admin/analytics/products', protect, admin, getProductAnalytics);
 router.get('/admin/analytics/visitors', protect, admin, getVisitors);
 router.get('/admin/analytics/visitors/:visitorId', protect, admin, getVisitorJourney);
 // Admin / Site Config

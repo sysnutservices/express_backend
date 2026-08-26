@@ -267,6 +267,13 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
         total: order.total,
         paymentMethod: order.paymentMethod,
         itemCount: order.items?.length || 0,
+        // Per-product breakdown — lets the admin Product Views page compute
+        // real purchase counts per product, not just views/add-to-cart.
+        // Orders are small (a handful of line items), so this stays well
+        // under the 2KB properties cap ingestEvent enforces on the client
+        // path — this write goes straight to Mongo, bypassing that check
+        // entirely, but the size is inherently bounded by cart size anyway.
+        items: (order.items || []).map((i: any) => ({ productId: i.productId, quantity: i.quantity })),
       },
       source: "server",
     });
