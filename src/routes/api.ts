@@ -10,6 +10,7 @@ import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, d
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
 import { getCart, addToCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
+import { getProductReviews, createReview, deleteReview } from '../controllers/reviewController';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -42,6 +43,12 @@ router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
 // file (or an already-hosted URL, for reprocessing) and returns the hosted
 // result — called by the admin form before Save, not part of the product CRUD.
 router.post('/products/process-image', protect, admin, upload.single('image'), processImage);
+
+// Reviews — one per user per product, createReview upserts (see controller).
+router.get('/products/:productId/reviews', publicCache, getProductReviews);
+router.post('/products/:productId/reviews', protect, createReview);
+// No moderation UI yet — direct admin-authenticated call is the removal path.
+router.delete('/admin/reviews/:reviewId', protect, admin, deleteReview);
 
 
 // Site Editor's image library — admin CMS only, no customer-facing use.
