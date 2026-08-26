@@ -17,6 +17,7 @@ export const ALLOWED_EVENTS = [
   "warranty_select",
   "filter_used",
   "sort_used",
+  "search",
   "whatsapp_click",
   "begin_checkout",
   "coupon_applied",
