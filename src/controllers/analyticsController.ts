@@ -106,40 +106,42 @@ export const ingestEvent = async (req: Request, res: Response) => {
 
     if (visitorId) {
       const touch = { ...cleanUtm, referrer: cleanReferrer, landingPage: cleanPage.path };
-      const existingVisitor = await Visitor.findOne({ visitorId }).select("_id").lean();
-      if (!existingVisitor) {
-        await Visitor.create({
-          visitorId,
-          userId,
-          firstSeenAt: now,
-          lastSeenAt: now,
-          firstTouch: touch,
-          lastTouch: touch,
-          totalEvents: 1,
-        });
-      } else {
-        const update: Record<string, unknown> = { lastSeenAt: now, lastTouch: touch };
-        if (userId) update.userId = userId;
-        await Visitor.updateOne({ visitorId }, { $set: update, $inc: { totalEvents: 1 } });
-      }
+      // A single atomic upsert, not findOne-then-create/update: a browser
+      // firing several events almost simultaneously on first page load
+      // (page_view + view_item, say) sent two concurrent requests through
+      // the old find-then-create version, both saw "not found," and the
+      // second's create() threw a duplicate-key error on the unique
+      // visitorId index — seen for real once real traffic started hitting
+      // this. findOneAndUpdate+upsert lets Mongo handle the race, not us.
+      const visitorUpdate: Record<string, unknown> = { $set: { lastSeenAt: now, lastTouch: touch }, $inc: { totalEvents: 1 } };
+      if (userId) (visitorUpdate.$set as Record<string, unknown>).userId = userId;
+      await Visitor.findOneAndUpdate(
+        { visitorId },
+        {
+          ...visitorUpdate,
+          $setOnInsert: { firstSeenAt: now, firstTouch: touch },
+        },
+        { upsert: true }
+      );
     }
 
     if (sessionId && visitorId) {
-      const existingSession = await Session.findOne({ sessionId }).select("_id").lean();
-      if (!existingSession) {
-        await Session.create({
-          sessionId,
-          visitorId,
-          startedAt: now,
-          lastEventAt: now,
-          utm: cleanUtm,
-          referrer: cleanReferrer,
-          landingPage: cleanPage.path,
-          userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
-        });
-      } else {
-        await Session.updateOne({ sessionId }, { $set: { lastEventAt: now } });
-      }
+      // Same race, same fix as Visitor above.
+      await Session.findOneAndUpdate(
+        { sessionId },
+        {
+          $set: { lastEventAt: now },
+          $setOnInsert: {
+            visitorId,
+            startedAt: now,
+            utm: cleanUtm,
+            referrer: cleanReferrer,
+            landingPage: cleanPage.path,
+            userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
+          },
+        },
+        { upsert: true }
+      );
     }
 
     await BehaviorEvent.create({
@@ -182,7 +184,7 @@ export const ingestEvent = async (req: Request, res: Response) => {
           },
         });
       } catch (err: any) {
-        console.error("Meta CAPI event failed:", err.message);
+        console.error("Meta CAPI event failed:", err.response?.data || err.message);
       }
     }
 

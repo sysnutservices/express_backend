@@ -304,7 +304,7 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
       },
     });
   } catch (err: any) {
-    console.error("Meta CAPI purchase event failed:", err.message);
+    console.error("Meta CAPI purchase event failed:", err.response?.data || err.message);
   }
 
   return order;
@@ -719,7 +719,7 @@ export const sendLoanEnquiry = async (req: Request, res: Response) => {
         },
       });
     } catch (err: any) {
-      console.error("Meta CAPI lead event failed:", err.message);
+      console.error("Meta CAPI lead event failed:", err.response?.data || err.message);
     }
 
     await sendAdminLoanEnquiryPayload(phone);
