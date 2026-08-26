@@ -42,6 +42,16 @@ export interface ISiteConfig extends Document {
     email: string;
     address: string;
   };
+  analytics: {
+    gaMeasurementId?: string;
+    metaPixelId?: string;
+    clarityProjectId?: string;
+    // Secret — adminController.getSiteConfig strips this from every
+    // response (both the public /site-config route and the technically-
+    // unauthenticated GET /admin/site-config route serve this same
+    // document). Only ever written via the protect+admin PUT.
+    metaCapiAccessToken?: string;
+  };
 }
 
 const SiteConfigSchema = new Schema(
@@ -99,6 +109,13 @@ const SiteConfigSchema = new Schema(
       phone: String,
       email: String,
       address: String
+    },
+
+    analytics: {
+      gaMeasurementId: { type: String, default: "" },
+      metaPixelId: { type: String, default: "" },
+      clarityProjectId: { type: String, default: "" },
+      metaCapiAccessToken: { type: String, default: "" },
     }
   },
   { timestamps: true }

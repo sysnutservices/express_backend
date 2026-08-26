@@ -2,18 +2,33 @@ import axios from "axios";
 import crypto from "crypto";
 import dotenv from "dotenv";
 dotenv.config();
+import SiteConfig from "../models/SiteConfig";
 
 // Meta Conversions API — server-side echo of events the browser Pixel also
 // sends, so ad optimization has a truth source that doesn't depend on the
 // customer's browser surviving a redirect / not running an ad-blocker.
-// Inert until both env vars are set (same "must keep working with no
+// Inert until credentials exist (same "must keep working with no
 // credentials configured" convention as services/ekart.ts) — every call
 // site here already wraps this in try/catch and treats a no-op the same as
-// success, so a missing/invalid token never blocks the real request it's
-// attached to.
-const META_PIXEL_ID = process.env.META_PIXEL_ID;
-const META_CAPI_ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN;
+// success, so missing/invalid credentials never block the real request
+// this is attached to.
 const GRAPH_API_VERSION = "v21.0";
+
+// Credentials come from the admin Settings page (SiteConfig.analytics) when
+// set there, falling back to the env vars — resolved fresh on every call
+// (not a module-level constant) so pasting a new token into Settings takes
+// effect immediately, no server restart needed.
+async function getCredentials(): Promise<{ pixelId?: string; accessToken?: string }> {
+  try {
+    const config = await SiteConfig.findOne().select("analytics").lean();
+    return {
+      pixelId: config?.analytics?.metaPixelId || process.env.META_PIXEL_ID,
+      accessToken: config?.analytics?.metaCapiAccessToken || process.env.META_CAPI_ACCESS_TOKEN,
+    };
+  } catch {
+    return { pixelId: process.env.META_PIXEL_ID, accessToken: process.env.META_CAPI_ACCESS_TOKEN };
+  }
+}
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value.trim().toLowerCase()).digest("hex");
@@ -68,7 +83,8 @@ export interface CapiEventInput {
 }
 
 export async function sendCapiEvent(input: CapiEventInput): Promise<void> {
-  if (!META_PIXEL_ID || !META_CAPI_ACCESS_TOKEN) return;
+  const { pixelId, accessToken } = await getCredentials();
+  if (!pixelId || !accessToken) return;
 
   const user_data: Record<string, unknown> = {};
   if (input.userData.email) user_data.em = [sha256(input.userData.email)];
@@ -79,7 +95,7 @@ export async function sendCapiEvent(input: CapiEventInput): Promise<void> {
   if (input.userData.fbc) user_data.fbc = input.userData.fbc;
 
   await axios.post(
-    `https://graph.facebook.com/${GRAPH_API_VERSION}/${META_PIXEL_ID}/events`,
+    `https://graph.facebook.com/${GRAPH_API_VERSION}/${pixelId}/events`,
     {
       data: [
         {
@@ -92,7 +108,7 @@ export async function sendCapiEvent(input: CapiEventInput): Promise<void> {
           custom_data: input.customData || {},
         },
       ],
-      access_token: META_CAPI_ACCESS_TOKEN,
+      access_token: accessToken,
     },
     { timeout: 5000 }
   );
