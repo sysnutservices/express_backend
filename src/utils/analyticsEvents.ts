@@ -22,6 +22,7 @@ export const ALLOWED_EVENTS = [
   "whatsapp_expert_click",
   "whatsapp_product_click",
   "begin_checkout",
+  "add_payment_info",
   "coupon_applied",
   "checkout_payment_failed",
   "login",
