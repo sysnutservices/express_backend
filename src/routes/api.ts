@@ -10,7 +10,7 @@ import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, d
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
 import { getCart, addToCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
-import { getProductReviews, createReview, deleteReview } from '../controllers/reviewController';
+import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -45,6 +45,7 @@ router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
 router.post('/products/process-image', protect, admin, upload.single('image'), processImage);
 
 // Reviews — one per user per product, createReview upserts (see controller).
+router.get('/reviews/featured', publicCache, getFeaturedReviews);
 router.get('/products/:productId/reviews', publicCache, getProductReviews);
 router.post('/products/:productId/reviews', protect, createReview);
 // No moderation UI yet — direct admin-authenticated call is the removal path.
