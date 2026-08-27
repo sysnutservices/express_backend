@@ -23,6 +23,11 @@ export interface IUser extends Document {
   totalSpent: number;
   ordersCount: number;
   status: 'active' | 'blocked';
+  // Bumped to force every existing token for this user to fail auth on its
+  // next request (see authMiddleware.protect) without waiting for the
+  // token's own 30-day expiry — a surgical "log out everywhere" that
+  // doesn't touch `status`/block the account from logging back in.
+  tokenVersion: number;
 }
 export const AddressSchema = new Schema<Address>(
   {
@@ -50,7 +55,8 @@ const UserSchema: Schema = new Schema({
   isProfileComplete: { type: Boolean, default: false },
   totalSpent: { type: Number, default: 0 },
   ordersCount: { type: Number, default: 0 },
-  status: { type: String, enum: ['active', 'blocked'], default: 'active' }
+  status: { type: String, enum: ['active', 'blocked'], default: 'active' },
+  tokenVersion: { type: Number, default: 0 }
 }, {
   timestamps: true
 });

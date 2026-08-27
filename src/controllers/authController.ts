@@ -5,12 +5,13 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { sendOtp } from '../services/wa';
 
-const generateToken = (user: { id: string; name: string; role: string }) => {
+const generateToken = (user: { id: string; name: string; role: string; tokenVersion: number }) => {
   return jwt.sign(
     {
       id: user.id,
       name: user.name,
       role: user.role,
+      tokenVersion: user.tokenVersion,
     },
     process.env.JWT_SECRET as string,
     { expiresIn: "30d" }
@@ -99,7 +100,8 @@ export const customerLogin = async (req: Request, res: Response) => {
       token: generateToken({
         id: user._id.toString(),
         name: user.name || "",
-        role: "customer"
+        role: "customer",
+        tokenVersion: user.tokenVersion || 0
       })
 
     }
@@ -141,7 +143,8 @@ export const adminLogin = async (req: Request, res: Response) => {
     token: generateToken({
       id: user._id.toString(),
       name: user.name || "",
-      role: "admin"
+      role: "admin",
+      tokenVersion: user.tokenVersion || 0
     })
 
   });
@@ -158,6 +161,23 @@ export const blockUser = async (req: Request, res: Response) => {
     user.status = user.status === 'blocked' ? 'active' : 'blocked';
     await user.save();
     res.json(user);
+  } else {
+    res.status(404).json({ message: 'User not found' });
+  }
+};
+
+// Invalidates every existing token for this user (see tokenVersion comment
+// on the User model + the check in authMiddleware.protect) — the account
+// stays active and they can log back in immediately with a fresh OTP, this
+// just ends whatever session(s) are currently active on any device.
+export const forceLogoutUser = async (req: Request, res: Response) => {
+  const user = await User.findByIdAndUpdate(
+    req.params.id,
+    { $inc: { tokenVersion: 1 } },
+    { new: true }
+  );
+  if (user) {
+    res.json({ success: true, tokenVersion: user.tokenVersion });
   } else {
     res.status(404).json({ message: 'User not found' });
   }
