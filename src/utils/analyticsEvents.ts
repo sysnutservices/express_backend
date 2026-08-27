@@ -34,6 +34,8 @@ export const ALLOWED_EVENTS = [
   "emi_info_viewed",
   "quality_report_viewed",
   "compare_product",
+  "budget_category_selected",
+  "shop_by_need_selected",
   // Written server-side only (orderController.ts), but still validated
   // against this same list for consistency.
   "purchase",
