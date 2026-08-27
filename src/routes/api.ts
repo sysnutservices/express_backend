@@ -11,6 +11,7 @@ import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGall
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
 import { getCart, addToCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
 import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
+import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -153,6 +154,12 @@ router.get("/cart/waId/:waId", internalOnly, getCartByWaId);
 router.put("/cart/settings", protect, admin, updateAbandonedCartSettings);
 router.get("/cart/settings", protect, admin, getAbandonedCartSettings);
 router.post("/loan/enquiry", protect, sendLoanEnquiry);
+
+// Contact Us form — genuinely public (unlike loan/enquiry above, the
+// contact page has no login gate, so this can't require one either).
+router.post("/contact", createContactMessage);
+router.get("/admin/contact-messages", protect, admin, getContactMessages);
+router.put("/admin/contact-messages/:id/status", protect, admin, updateContactMessageStatus);
 
 router.delete("/cart/clear", protect, clearCart);
 
