@@ -1,7 +1,7 @@
 import express from 'express';
 import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage } from '../controllers/productController';
 import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
-import { getUsers, blockUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
+import { getUsers, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
@@ -91,6 +91,7 @@ router.post('/users/otp', sendOTP);
 router.post('/users/admin/login', adminLogin);
 router.get('/users', protect, admin, getUsers);
 router.route('/users/:id/block').put(protect, admin, blockUser);
+router.post('/users/:id/force-logout', protect, admin, forceLogoutUser);
 router.put('/users/profile', protect, updateProfile);
 
 router.post('/users/address', protect, addAddress);
