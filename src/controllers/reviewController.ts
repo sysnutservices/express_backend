@@ -26,6 +26,36 @@ export const getProductReviews = async (req: Request, res: Response) => {
   }
 };
 
+// Powers the homepage "Trusted by Laptop Buyers" section — real reviews only,
+// picked (not written): highest-rated first, verified purchases first among
+// ties, so it can never be an empty/fabricated testimonial list. Returns []
+// when there simply aren't enough genuine reviews yet; the frontend renders
+// a clean empty state for that rather than inventing testimonials.
+export const getFeaturedReviews = async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 9, 20);
+    const reviews = await Review.find({ rating: { $gte: 4 } })
+      .sort({ verifiedPurchase: -1, rating: -1, createdAt: -1 })
+      .limit(limit)
+      .populate("productId", "title slug")
+      .lean();
+    res.json(
+      reviews.map((r: any) => ({
+        _id: r._id,
+        userName: r.userName,
+        rating: r.rating,
+        comment: r.comment,
+        verifiedPurchase: r.verifiedPurchase,
+        createdAt: r.createdAt,
+        productTitle: r.productId?.title,
+        productSlug: r.productId?.slug,
+      }))
+    );
+  } catch (error) {
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 export const createReview = async (req: Request, res: Response) => {
   try {
     const { productId } = req.params;
