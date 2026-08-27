@@ -17,6 +17,13 @@ const TEMPLATE_IDS = {
     orderConfirmation: process.env.WHATSAPP_SAAS_ORDER_CONFIRMATION_TEMPLATE_ID || "ee0fb9d6-0f93-4504-bb71-d9ac9373ec92",
     adminOrderAlert: process.env.WHATSAPP_SAAS_ADMIN_ORDER_ALERT_TEMPLATE_ID || "77acf691-b394-450b-9049-f755b8d1b9bc",
     adminLoanAlert: process.env.WHATSAPP_SAAS_ADMIN_LOAN_ALERT_TEMPLATE_ID || "9cd3e598-3311-4b54-a1cd-684893b22e3c",
+    // No default id — unlike the templates above, this one hasn't been
+    // created on chat.lapshark.com yet, so there's no real id to fall back
+    // to. sendAdminContactAlert below no-ops (logs, doesn't throw) until
+    // WHATSAPP_SAAS_ADMIN_CONTACT_ALERT_TEMPLATE_ID is set in .env — create
+    // the template there (e.g. "New contact form message from {{1}} ({{2}}):
+    // {{3}}"), get it Meta-approved, then set the id.
+    adminContactAlert: process.env.WHATSAPP_SAAS_ADMIN_CONTACT_ALERT_TEMPLATE_ID,
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -91,6 +98,27 @@ export async function sendAdminLoanEnquiryPayload(phone: string) {
         return await sendTemplate(TEMPLATE_IDS.adminLoanAlert, to, [phone]);
     } catch (error: any) {
         console.error("WhatsApp Admin Loan Enquiry Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Truncated to a sane WhatsApp-template-friendly length — templates render
+// params inline, an essay-length message field would blow past what's
+// readable in a notification.
+export async function sendAdminContactAlert(name: string, email: string, message: string) {
+    if (!TEMPLATE_IDS.adminContactAlert) {
+        console.warn(
+            "sendAdminContactAlert skipped: WHATSAPP_SAAS_ADMIN_CONTACT_ALERT_TEMPLATE_ID not set. " +
+            "The message was still saved to the database — this only affects the WhatsApp alert."
+        );
+        return null;
+    }
+    const to = process.env.ADMIN_PHONE_NUMBER!;
+    const truncated = message.length > 300 ? message.slice(0, 297) + "..." : message;
+    try {
+        return await sendTemplate(TEMPLATE_IDS.adminContactAlert, to, [name, email, truncated]);
+    } catch (error: any) {
+        console.error("WhatsApp Admin Contact Alert Error:", error.response?.data || error);
         throw error;
     }
 }
