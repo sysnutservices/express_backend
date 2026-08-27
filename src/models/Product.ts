@@ -27,6 +27,38 @@ export interface IProduct extends Document {
   isBestDeal: boolean;
   condition: string;
 
+  // Drives "Find Your Perfect Laptop" / "Shop by Need" filtering. Deliberately
+  // NOT a stored budgetCategory field — that's derivable from finalPrice at
+  // query time, and a stored copy would just be one more number to keep in
+  // sync (the exact drift problem STORE_POLICIES was built to stop).
+  useCases: string[];
+  performanceTier?: "basic" | "balanced" | "high-performance";
+  // Free-form marketing tags ("best-value", "portable", "long-battery-life")
+  // for ProductBadges/recommendation copy — separate from useCases, which is
+  // the controlled vocabulary the recommendation engine actually filters on.
+  tags: string[];
+
+  // Per-listing inspection results for the "Lapshark Quality Report". All
+  // optional and unset by default — see the comment on QualityReportSchema
+  // below for why these are never fabricated.
+  qualityReport?: {
+    batteryHealthPercent?: number;
+    storageHealthPercent?: number;
+    displayStatus?: "passed" | "minor-wear" | "failed";
+    keyboardStatus?: "passed" | "minor-wear" | "failed";
+    trackpadStatus?: "passed" | "minor-wear" | "failed";
+    webcamStatus?: "passed" | "minor-wear" | "failed";
+    speakerStatus?: "passed" | "minor-wear" | "failed";
+    microphoneStatus?: "passed" | "minor-wear" | "failed";
+    wifiStatus?: "passed" | "minor-wear" | "failed";
+    bluetoothStatus?: "passed" | "minor-wear" | "failed";
+    portsStatus?: "passed" | "minor-wear" | "failed";
+    physicalConditionNotes?: string;
+    serialVerified?: boolean;
+    technicianChecked?: boolean;
+    inspectedAt?: Date;
+  };
+
   // Shipping package dims for Ekart rate/serviceability + shipment creation.
   // Defaulted to a typical boxed-laptop parcel so existing/new products ship
   // correctly with zero admin input; override per-product when it matters
@@ -60,6 +92,54 @@ export const DEFAULT_CONFIG_OPTIONS = {
     { label: "2 Year Warranty", value: "2 Year", price: 2999 },
   ],
 };
+
+// Controlled vocabulary the recommendation engine (lib/product-recommendation.ts
+// on the frontend) matches against — keep in sync with USE_CASES there.
+export const USE_CASES = [
+  "student",
+  "office",
+  "programming",
+  "design",
+  "gaming",
+  "everyday",
+] as const;
+
+const QUALITY_STATUS_VALUES = ["passed", "minor-wear", "failed"] as const;
+
+// Every field here is optional with NO default — an admin who hasn't
+// inspected/entered data for a listing gets `undefined`, not a fabricated
+// "passed". The Quality Report UI only ever renders a field it actually got
+// a value for; everything else falls back to the general 40-point-inspection
+// claim, never an invented checkmark or percentage.
+//
+// This is architected per-listing (on Product), not per-serial-number: this
+// schema has a `stock` count, meaning one listing can represent more than
+// one physical unit. If Lapshark starts tracking individual units by serial
+// number, this belongs on a separate per-unit collection instead — putting
+// exact-unit data (a specific battery %, a specific serial) on a
+// multi-stock listing would misrepresent every unit that isn't the one
+// inspected. Confirm actual stock-per-listing practice before entering real
+// numbers here.
+const QualityReportSchema = new Schema(
+  {
+    batteryHealthPercent: { type: Number, min: 0, max: 100 },
+    storageHealthPercent: { type: Number, min: 0, max: 100 },
+    displayStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    keyboardStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    trackpadStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    webcamStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    speakerStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    microphoneStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    wifiStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    bluetoothStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    portsStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    physicalConditionNotes: { type: String },
+    serialVerified: { type: Boolean },
+    technicianChecked: { type: Boolean },
+    inspectedAt: { type: Date },
+  },
+  { _id: false }
+);
 
 export const Category = {
   BUSINESS: "Business Laptops",
@@ -123,9 +203,25 @@ const ProductSchema: Schema<IProduct> = new Schema(
     isBestDeal: { type: Boolean, default: false },
 
     condition: {
+      // "New" included alongside the refurbished grades: the admin form
+      // (app/admin/(dashboard)/products/page.tsx) already offers it as an
+      // option for the rare brand-new accessory/listing.
       type: String,
+      enum: ["Like New", "Excellent", "Good", "New"],
       default: "Excellent",
     },
+
+    useCases: {
+      type: [{ type: String, enum: USE_CASES }],
+      default: [],
+      index: true,
+    },
+    performanceTier: {
+      type: String,
+      enum: ["basic", "balanced", "high-performance"],
+    },
+    tags: { type: [String], default: [] },
+    qualityReport: { type: QualityReportSchema, default: undefined },
 
     weightKg: { type: Number, default: 2.5 },
     lengthCm: { type: Number, default: 35 },

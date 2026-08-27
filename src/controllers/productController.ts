@@ -168,6 +168,10 @@ export const createProduct = async (req: Request, res: Response) => {
       isNewItem: req.body.isNewItem === 'true',
       isTrending: req.body.isTrending === 'true',
       isBestDeal: req.body.isBestDeal === 'true',
+      useCases: req.body.useCases ? JSON.parse(req.body.useCases) : [],
+      tags: req.body.tags ? JSON.parse(req.body.tags) : [],
+      performanceTier: req.body.performanceTier || undefined,
+      qualityReport: req.body.qualityReport ? JSON.parse(req.body.qualityReport) : undefined,
     };
 
     // Generated from the title when the admin form leaves it blank.
@@ -281,6 +285,10 @@ export const updateProduct = async (req: Request, res: Response) => {
     if (req.body.brand !== undefined) product.brand = req.body.brand;
     if (req.body.category !== undefined) product.category = req.body.category;
     if (req.body.condition !== undefined) product.condition = req.body.condition;
+    if (req.body.useCases !== undefined) product.useCases = JSON.parse(req.body.useCases) as any;
+    if (req.body.tags !== undefined) product.tags = JSON.parse(req.body.tags) as any;
+    if (req.body.performanceTier !== undefined) product.performanceTier = (req.body.performanceTier || undefined) as any;
+    if (req.body.qualityReport !== undefined) product.qualityReport = JSON.parse(req.body.qualityReport) as any;
     if (req.body.productId !== undefined) product.productId = req.body.productId;
     if (req.body.slug !== undefined) product.slug = req.body.slug;
     // Backfill only. An existing slug is never regenerated on edit: changing a
