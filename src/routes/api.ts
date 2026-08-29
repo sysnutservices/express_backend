@@ -4,7 +4,7 @@ import {
     uploadOriginal, uploadOriginalMiddleware, listProductImages, processRootImage,
     updateVersionSettings, approveVersion, rejectVersion, returnVersionToReview,
     reorderProductImages, publishProduct, getUsageSummary, getUsageByProductHandler,
-    deleteRootImage,
+    deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
 import { getAiSettingsStatus, updateAiSettings, testAiConnection } from '../controllers/aiSettingsController';
 import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
@@ -63,6 +63,7 @@ router.patch('/products/images/versions/:versionId/settings', protect, admin, up
 router.post('/products/images/versions/:versionId/approve', protect, admin, approveVersion);
 router.post('/products/images/versions/:versionId/reject', protect, admin, rejectVersion);
 router.post('/products/images/versions/:versionId/return-to-review', protect, admin, returnVersionToReview);
+router.delete('/products/images/versions/:versionId', protect, admin, deleteVersion);
 router.delete('/products/images/:rootImageId', protect, admin, deleteRootImage);
 router.patch('/products/:productId/images/reorder', protect, admin, reorderProductImages);
 router.post('/products/:productId/images/publish', protect, admin, publishProduct);
