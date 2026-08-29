@@ -54,6 +54,8 @@ router.patch('/products/images/versions/:versionId/settings', authMiddleware_1.p
 router.post('/products/images/versions/:versionId/approve', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.approveVersion);
 router.post('/products/images/versions/:versionId/reject', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.rejectVersion);
 router.post('/products/images/versions/:versionId/return-to-review', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.returnVersionToReview);
+router.delete('/products/images/versions/:versionId', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.deleteVersion);
+router.delete('/products/images/:rootImageId', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.deleteRootImage);
 router.patch('/products/:productId/images/reorder', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.reorderProductImages);
 router.post('/products/:productId/images/publish', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.publishProduct);
 router.get('/admin/ai-usage/summary', authMiddleware_1.protect, authMiddleware_1.admin, productImageController_1.getUsageSummary);

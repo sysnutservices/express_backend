@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getUsageByProductHandler = exports.getUsageSummary = exports.publishProduct = exports.reorderProductImages = exports.returnVersionToReview = exports.rejectVersion = exports.approveVersion = exports.updateVersionSettings = exports.processRootImage = exports.listProductImages = exports.uploadOriginal = exports.uploadOriginalMiddleware = void 0;
+exports.getUsageByProductHandler = exports.getUsageSummary = exports.publishProduct = exports.reorderProductImages = exports.deleteRootImage = exports.deleteVersion = exports.returnVersionToReview = exports.rejectVersion = exports.approveVersion = exports.updateVersionSettings = exports.processRootImage = exports.listProductImages = exports.uploadOriginal = exports.uploadOriginalMiddleware = void 0;
 const sharp_1 = __importDefault(require("sharp"));
 const ProductImage_1 = __importDefault(require("../models/ProductImage"));
 const Product_1 = __importDefault(require("../models/Product"));
@@ -303,6 +303,48 @@ const returnVersionToReview = (req, res) => __awaiter(void 0, void 0, void 0, fu
     }
 });
 exports.returnVersionToReview = returnVersionToReview;
+// Removes a single AI attempt (not the whole slot) — for a generation the
+// admin doesn't like, without losing the original or other versions under
+// it. Same ImageKit-files-stay, blocked-while-published rules as
+// deleteRootImage below.
+const deleteVersion = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const version = yield ProductImage_1.default.findById(req.params.versionId);
+        if (!version || version.rootImageId === null)
+            return res.status(404).json({ message: "Image version not found" });
+        if (version.isPublished) {
+            return res.status(400).json({ message: "This image is published on the storefront — publish a replacement before deleting it." });
+        }
+        yield version.deleteOne();
+        res.json({ success: true });
+    }
+    catch (err) {
+        errorResponse(res, err);
+    }
+});
+exports.deleteVersion = deleteVersion;
+// Removes a slot (the original + every AI version under it) from the
+// workflow entirely. Only the Mongo records go — the ImageKit files stay,
+// same as SUPERSEDED versions elsewhere, since nothing else needs the
+// storage back. Blocked while a version is live on the storefront so a
+// stray click can't silently break the product page.
+const deleteRootImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const root = yield ProductImage_1.default.findOne({ _id: req.params.rootImageId, rootImageId: null });
+        if (!root)
+            return res.status(404).json({ message: "Image not found" });
+        const versions = yield ProductImage_1.default.find({ rootImageId: root._id });
+        if (versions.some((v) => v.isPublished)) {
+            return res.status(400).json({ message: "This image is published on the storefront — publish a replacement before deleting it." });
+        }
+        yield ProductImage_1.default.deleteMany({ _id: { $in: [root._id, ...versions.map((v) => v._id)] } });
+        res.json({ success: true });
+    }
+    catch (err) {
+        errorResponse(res, err);
+    }
+});
+exports.deleteRootImage = deleteRootImage;
 const reorderProductImages = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { productId } = req.params;

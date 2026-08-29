@@ -293,6 +293,24 @@ export const returnVersionToReview = async (req: Request, res: Response) => {
   }
 };
 
+// Removes a single AI attempt (not the whole slot) — for a generation the
+// admin doesn't like, without losing the original or other versions under
+// it. Same ImageKit-files-stay, blocked-while-published rules as
+// deleteRootImage below.
+export const deleteVersion = async (req: Request, res: Response) => {
+  try {
+    const version = await ProductImage.findById(req.params.versionId);
+    if (!version || version.rootImageId === null) return res.status(404).json({ message: "Image version not found" });
+    if (version.isPublished) {
+      return res.status(400).json({ message: "This image is published on the storefront — publish a replacement before deleting it." });
+    }
+    await version.deleteOne();
+    res.json({ success: true });
+  } catch (err) {
+    errorResponse(res, err);
+  }
+};
+
 // Removes a slot (the original + every AI version under it) from the
 // workflow entirely. Only the Mongo records go — the ImageKit files stay,
 // same as SUPERSEDED versions elsewhere, since nothing else needs the
