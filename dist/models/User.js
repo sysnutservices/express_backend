@@ -57,7 +57,8 @@ const UserSchema = new mongoose_1.Schema({
     isProfileComplete: { type: Boolean, default: false },
     totalSpent: { type: Number, default: 0 },
     ordersCount: { type: Number, default: 0 },
-    status: { type: String, enum: ['active', 'blocked'], default: 'active' }
+    status: { type: String, enum: ['active', 'blocked'], default: 'active' },
+    tokenVersion: { type: Number, default: 0 }
 }, {
     timestamps: true
 });

@@ -43,7 +43,18 @@ const SiteConfigSchema = new mongoose_1.Schema({
         imageMobile: { type: String, default: "" },
         imageTablet: { type: String, default: "" },
         imageDesktop: { type: String, default: "" },
-        activeHeroTemplate: { type: String, default: "default" }
+        activeHeroTemplate: { type: String, default: "default" },
+        // Multiple hero banners shown as a slideshow. Legacy single image/imageDesktop/
+        // imageTablet/imageMobile fields above stay as a fallback for configs saved
+        // before this existed.
+        slides: [
+            {
+                href: { type: String, default: "/products" },
+                imageDesktop: String,
+                imageTablet: String,
+                imageMobile: String,
+            }
+        ]
     },
     banners: [
         {
@@ -71,6 +82,12 @@ const SiteConfigSchema = new mongoose_1.Schema({
         phone: String,
         email: String,
         address: String
+    },
+    analytics: {
+        gaMeasurementId: { type: String, default: "" },
+        metaPixelId: { type: String, default: "" },
+        clarityProjectId: { type: String, default: "" },
+        metaCapiAccessToken: { type: String, default: "" },
     }
 }, { timestamps: true });
 // Ensure only one config document exists

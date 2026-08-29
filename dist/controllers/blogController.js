@@ -14,7 +14,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteBlog = exports.updateBlog = exports.getBlogBySlug = exports.getAllBlogsAdmin = exports.getAllBlogs = exports.createBlog = void 0;
 const slugify_1 = __importDefault(require("slugify"));
-const Blog_js_1 = __importDefault(require("../models/Blog.js"));
+const Blog_1 = __importDefault(require("../models/Blog"));
 const mongoose_1 = __importDefault(require("mongoose"));
 const createBlog = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
@@ -35,7 +35,7 @@ const createBlog = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
             slug = (0, slugify_1.default)(title, { lower: true, strict: true });
         }
         console.log("💾 Creating blog with data:", { title, excerpt, slug, image, content });
-        const blog = yield Blog_js_1.default.create(Object.assign(Object.assign(Object.assign({ title,
+        const blog = yield Blog_1.default.create(Object.assign(Object.assign(Object.assign({ title,
             excerpt,
             slug,
             image,
@@ -58,7 +58,7 @@ exports.createBlog = createBlog;
 // before the status field existed (no status at all) remain visible.
 const getAllBlogs = (_, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const blogs = yield Blog_js_1.default.find({ status: { $ne: "draft" } }).sort({ createdAt: -1 });
+        const blogs = yield Blog_1.default.find({ status: { $ne: "draft" } }).sort({ createdAt: -1 });
         res.json(blogs);
     }
     catch (error) {
@@ -70,7 +70,7 @@ exports.getAllBlogs = getAllBlogs;
 // stay cached — a single endpoint varying by auth would poison the cache.
 const getAllBlogsAdmin = (_, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
-        const blogs = yield Blog_js_1.default.find().sort({ createdAt: -1 });
+        const blogs = yield Blog_1.default.find().sort({ createdAt: -1 });
         res.json(blogs);
     }
     catch (error) {
@@ -82,7 +82,7 @@ const getBlogBySlug = (req, res) => __awaiter(void 0, void 0, void 0, function* 
     try {
         // Drafts 404 publicly: a reachable draft URL can be crawled and indexed
         // before anyone has approved the content.
-        const blog = yield Blog_js_1.default.findOne({ slug: req.params.slug, status: { $ne: "draft" } });
+        const blog = yield Blog_1.default.findOne({ slug: req.params.slug, status: { $ne: "draft" } });
         if (!blog) {
             return res.status(404).json({ message: "Blog not found" });
         }
@@ -128,7 +128,7 @@ const updateBlog = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
             updateData.slug = newSlug;
         updateData.updatedAt = new Date().toISOString();
         console.log("📝 Final update data:", updateData);
-        const blog = yield Blog_js_1.default.findByIdAndUpdate(id, { $set: updateData }, { new: true, runValidators: true });
+        const blog = yield Blog_1.default.findByIdAndUpdate(id, { $set: updateData }, { new: true, runValidators: true });
         if (!blog) {
             return res.status(404).json({ message: "Blog not found" });
         }
@@ -150,7 +150,7 @@ const deleteBlog = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
         if (!mongoose_1.default.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ message: "Invalid blog id" });
         }
-        const blog = yield Blog_js_1.default.findByIdAndDelete(id);
+        const blog = yield Blog_1.default.findByIdAndDelete(id);
         if (!blog) {
             return res.status(404).json({ message: "Blog not found" });
         }

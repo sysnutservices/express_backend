@@ -5,7 +5,12 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { imagekit, uploadToImageKit, uploadUrlToImageKit, uploadBufferToImageKit } from '../services/imagekit';
-import { processProductImage, ProductViewType, ViewPreset, VIEW_PRESETS } from '../services/imageProcessing';
+import sharp from 'sharp';
+import { resolveViewSettings, viewPresetToStudioSettings, composeStudioImage, generateVariants, ProductViewType, ViewPreset, VIEW_PRESETS, PROCESSING_CONFIG_VERSION } from '../services/imageProcessing';
+import { sanitizeSettings } from '../utils/imageSettingsValidation';
+import { buildLapsharkImagePrompt, generateEcommerceEdit, classifyOpenAIError, IMAGE_PROMPT_VERSION } from '../services/openaiImageService';
+import { checkBudgetAndLimits, estimateCost, recordUsage } from '../services/imageCostControl';
+import { removeBackgroundLocal } from '../services/localSegmentation';
 
 // Configure multer storage
 // const storage = multer.diskStorage({
@@ -113,11 +118,16 @@ export const createProduct = async (req: Request, res: Response) => {
     let mainImage = "";
     let galleryImages: string[] = [];
 
+    // Product title doubles as the image filename hint below (e.g.
+    // "dell-latitude-5400-i5-8gb.jpg" instead of "gallery-<random>.jpg").
+    const titleHint = String(req.body.title || 'product').replace(/[|/\\]+/g, ' ');
+
     // MAIN IMAGE UPLOAD
     if (files?.image?.[0]) {
       const uploadResult = await uploadToImageKit(
         files.image[0],
-        "/lapshark/products"
+        "/lapshark/products",
+        titleHint
       );
       mainImage = uploadResult.url;
     }
@@ -125,8 +135,8 @@ export const createProduct = async (req: Request, res: Response) => {
     // GALLERY IMAGE UPLOAD
     if (files?.images?.length) {
       const uploadResults = await Promise.all(
-        files.images.map((img) =>
-          uploadToImageKit(img, "/lapshark/products/gallery")
+        files.images.map((img, i) =>
+          uploadToImageKit(img, "/lapshark/products/gallery", `${titleHint} ${i + 1}`)
         )
       );
       galleryImages = uploadResults.map(res => res.url);
@@ -139,12 +149,12 @@ export const createProduct = async (req: Request, res: Response) => {
     // files rather than replacing them, since a save can legitimately mix
     // processed URLs with raw-file fallbacks for images that failed to process.
     if (!mainImage && req.body.imageUrl) {
-      const uploaded = await uploadUrlToImageKit(req.body.imageUrl, "/lapshark/products");
+      const uploaded = await uploadUrlToImageKit(req.body.imageUrl, "/lapshark/products", titleHint);
       mainImage = uploaded.url;
     }
     if (req.body.imageUrls) {
       const urls: string[] = typeof req.body.imageUrls === 'string' ? JSON.parse(req.body.imageUrls) : req.body.imageUrls;
-      const uploadResults = await Promise.all(urls.map((u) => uploadUrlToImageKit(u, "/lapshark/products/gallery")));
+      const uploadResults = await Promise.all(urls.map((u, i) => uploadUrlToImageKit(u, "/lapshark/products/gallery", `${titleHint} ${i + 1}`)));
       galleryImages = [...galleryImages, ...uploadResults.map((res) => res.url)];
     }
 
@@ -198,6 +208,7 @@ export const updateProduct = async (req: Request, res: Response) => {
     }
 
     const files = req.files as { [field: string]: Express.Multer.File[] };
+    const titleHint = String(req.body.title || product.title || 'product').replace(/[|/\\]+/g, ' ');
 
     //
     // 1️⃣ MAIN IMAGE (Upload to ImageKit)
@@ -205,12 +216,13 @@ export const updateProduct = async (req: Request, res: Response) => {
     if (files?.image?.[0]) {
       const uploadResult = await uploadToImageKit(
         files.image[0],
-        "/lapshark/products"
+        "/lapshark/products",
+        titleHint
       );
       product.image = uploadResult.url;
     } else if (req.body.imageUrl) {
       // URL-based main image — same CRM sync use case as createProduct above.
-      const uploaded = await uploadUrlToImageKit(req.body.imageUrl, "/lapshark/products");
+      const uploaded = await uploadUrlToImageKit(req.body.imageUrl, "/lapshark/products", titleHint);
       product.image = uploaded.url;
     }
 
@@ -239,8 +251,8 @@ export const updateProduct = async (req: Request, res: Response) => {
     // are appended rather than one gating the other.
     if (files?.images?.length) {
       const uploadedGallery = await Promise.all(
-        files.images.map((file) =>
-          uploadToImageKit(file, "/lapshark/products/gallery")
+        files.images.map((file, i) =>
+          uploadToImageKit(file, "/lapshark/products/gallery", `${titleHint} ${galleryImages.length + i + 1}`)
         )
       );
 
@@ -249,7 +261,7 @@ export const updateProduct = async (req: Request, res: Response) => {
     if (req.body.imageUrls) {
       // URL-based gallery images — same CRM sync use case as createProduct.
       const urls: string[] = typeof req.body.imageUrls === 'string' ? JSON.parse(req.body.imageUrls) : req.body.imageUrls;
-      const uploadedGallery = await Promise.all(urls.map((u) => uploadUrlToImageKit(u, "/lapshark/products/gallery")));
+      const uploadedGallery = await Promise.all(urls.map((u, i) => uploadUrlToImageKit(u, "/lapshark/products/gallery", `${titleHint} ${galleryImages.length + i + 1}`)));
       galleryImages = [...galleryImages, ...uploadedGallery.map((r) => r.url)];
     }
 
@@ -364,28 +376,18 @@ export const deleteProduct = async (req: Request, res: Response) => {
   }
 };
 
-// Multipart fields arrive as strings — `settings` is sent as a JSON string
-// when present (mirrors how `viewType` is just a plain field). Invalid JSON
-// is treated as "no overrides" rather than a hard error, since composition
-// overrides are optional.
-function parseSettingsField(raw: unknown): Partial<ViewPreset> | undefined {
-  if (!raw) return undefined;
-  if (typeof raw === 'object') return raw as Partial<ViewPreset>;
-  if (typeof raw === 'string') {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
 // Runs a picked file (or an already-hosted image, for reprocessing) through
-// PhotoRoom background removal + view-preset-driven studio compositing, then
-// uploads the result to ImageKit. Called by the admin form the instant an
-// image is picked, before the product itself is saved — the returned URL is
-// what createProduct/updateProduct receive via imageUrl/imageUrls.
+// OpenAI GPT Image 2 + view-preset-driven Sharp compositing, then uploads
+// the result to ImageKit. Called by the admin form the instant an image is
+// picked, before the product itself is saved — the returned URL is what
+// createProduct/updateProduct receive via imageUrl/imageUrls.
+//
+// No productId/ProductImage exists yet at this point in the flow, so usage
+// is recorded with null product references (still counts toward the
+// budget/rate limits — see ImageProcessingUsage's productId comment) and
+// there's no fingerprint-reuse or version history here, only a single
+// attempt per call; the existing admin form's own "Retry" button already
+// covers manual retry on failure.
 export const processImage = async (req: Request, res: Response) => {
   try {
     let inputBuffer: Buffer;
@@ -399,24 +401,126 @@ export const processImage = async (req: Request, res: Response) => {
       if (!fetched.ok) throw new Error(`Could not fetch source image (${fetched.status})`);
       inputBuffer = Buffer.from(await fetched.arrayBuffer());
       mimeType = fetched.headers.get('content-type') || 'image/jpeg';
+      if (!mimeType.startsWith('image/')) {
+        return res.status(400).json({ message: 'imageUrl did not point to an image' });
+      }
     } else {
       return res.status(400).json({ message: 'No image file or imageUrl provided' });
     }
 
-    const viewType: ProductViewType = req.body.viewType in VIEW_PRESETS ? req.body.viewType : 'custom';
-    const settings = parseSettingsField(req.body.settings);
+    try {
+      await sharp(inputBuffer).metadata();
+    } catch {
+      return res.status(400).json({ message: 'Invalid or unsupported image' });
+    }
 
-    const result = await processProductImage({ input: inputBuffer, mimeType, viewType, settings });
-    const uploaded = await uploadBufferToImageKit(result.buffer, '/lapshark/products');
+    const viewType: ProductViewType = req.body.viewType in VIEW_PRESETS ? req.body.viewType : 'custom';
+    const settings = sanitizeSettings(req.body.settings);
+
+    const budgetCheck = await checkBudgetAndLimits(estimateCost(null).amountUsd);
+    if (!budgetCheck.allowed) {
+      const status = budgetCheck.reason === 'AI_DISABLED' ? 503 : budgetCheck.reason === 'MONTHLY_BUDGET' ? 402 : 429;
+      const messages: Record<string, string> = {
+        AI_DISABLED: 'AI image processing is temporarily disabled.',
+        MONTHLY_BUDGET: 'Monthly image processing budget has been reached.',
+        DAILY_LIMIT: 'Daily image processing limit reached, try again later.',
+        HOURLY_LIMIT: 'Hourly image processing limit reached, try again later.',
+      };
+      return res.status(status).json({ message: messages[budgetCheck.reason] });
+    }
+
+    const prompt = buildLapsharkImagePrompt({ viewType });
+    const initiatedBy = (req as any).user?._id ?? null;
+    const attemptStart = Date.now();
+    let edited: Awaited<ReturnType<typeof generateEcommerceEdit>>;
+    try {
+      edited = await generateEcommerceEdit(inputBuffer, mimeType, prompt);
+      const cost = estimateCost(edited.usage);
+      await recordUsage({
+        productId: null,
+        productImageId: null,
+        imageVersionId: null,
+        operation: 'create',
+        aiModel: 'gpt-image-2',
+        originalImageHash: null,
+        processingHash: null,
+        promptVersion: IMAGE_PROMPT_VERSION,
+        processingConfigVersion: PROCESSING_CONFIG_VERSION,
+        status: 'success',
+        inputUsage: edited.usage,
+        outputUsage: edited.usage,
+        totalUsage: edited.usage,
+        estimatedCost: cost.amountUsd,
+        estimatedCostIsApproximate: cost.approximate,
+        durationMs: Date.now() - attemptStart,
+        initiatedBy,
+      });
+    } catch (err) {
+      const classified = classifyOpenAIError(err);
+      await recordUsage({
+        productId: null,
+        productImageId: null,
+        imageVersionId: null,
+        operation: 'create',
+        aiModel: 'gpt-image-2',
+        originalImageHash: null,
+        processingHash: null,
+        promptVersion: IMAGE_PROMPT_VERSION,
+        processingConfigVersion: PROCESSING_CONFIG_VERSION,
+        status: classified.transient ? 'error_transient' : 'error_permanent',
+        inputUsage: null,
+        outputUsage: null,
+        totalUsage: null,
+        estimatedCost: null,
+        estimatedCostIsApproximate: true,
+        durationMs: Date.now() - attemptStart,
+        errorMessage: classified.message.slice(0, 500),
+        initiatedBy,
+      });
+      throw new Error('AI image editing failed');
+    }
+
+    // Tight, robust bounding-box crop (IS-Net) before composition — OpenAI's
+    // edit doesn't determine final geometry, Sharp does, from this bbox.
+    const cutoutBuffer = await removeBackgroundLocal(edited.buffer);
+    const merged = resolveViewSettings(viewType, settings);
+    const studioSettings = viewPresetToStudioSettings(merged);
+    const masterBuffer = await composeStudioImage(cutoutBuffer, studioSettings);
+    const variants = await generateVariants(masterBuffer);
+
+    // No product title exists yet at this stage (image is processed before
+    // Save) — fall back to the view type, still far more descriptive than a
+    // random id. The admin form can pass `title` here once it's known.
+    const nameHint = [req.body.title, viewType !== 'custom' ? viewType.replace(/_/g, ' ') : ''].filter(Boolean).join(' ') || 'laptop';
+
+    const [masterUpload, productUpload, thumbnailUpload] = await Promise.all([
+      uploadBufferToImageKit(variants.master.buffer, '/lapshark/products', nameHint),
+      uploadBufferToImageKit(variants.product.buffer, '/lapshark/products/variants', `${nameHint} product`),
+      uploadBufferToImageKit(variants.thumbnail.buffer, '/lapshark/products/variants', `${nameHint} thumbnail`),
+    ]);
+
     res.json({
-      url: uploaded.url,
-      width: uploaded.width,
-      height: uploaded.height,
-      viewType: result.viewType,
-      appliedSettings: { scale: result.appliedScale, position: result.appliedPosition },
+      success: true,
+      // Flat fields kept for the existing admin form, which only reads these.
+      url: masterUpload.url,
+      width: masterUpload.width,
+      height: masterUpload.height,
+      viewType,
+      appliedSettings: { scale: merged.scale, position: merged.position },
+      images: {
+        master: { url: masterUpload.url, width: variants.master.width, height: variants.master.height },
+        product: { url: productUpload.url, width: variants.product.width, height: variants.product.height },
+        thumbnail: { url: thumbnailUpload.url, width: variants.thumbnail.width, height: variants.thumbnail.height },
+      },
+      metadata: {
+        viewType,
+        appliedSettings: merged,
+      },
     });
   } catch (error: any) {
     console.error('Error processing image:', error);
-    res.status(500).json({ message: 'Image processing failed', error: error.message });
+    // Provider/internal detail stays server-side in prod.
+    const message = process.env.NODE_ENV === 'production' ? undefined : error.message;
+    res.status(500).json({ message: 'Image processing failed', error: message });
   }
 };

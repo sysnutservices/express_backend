@@ -51,6 +51,8 @@ const OrderSchema = new mongoose_1.Schema({
     coupon: { type: String, default: null }, // ✅ ADD THIS
     date: { type: String, required: true },
     total: { type: Number, required: true },
+    advanceAmount: { type: Number, default: 0 },
+    metaEventId: { type: String },
     mapLink: { type: String, default: "" },
     razorpayOrderId: { type: String, required: true },
     razorpayPaymentId: { type: String, default: "" },
@@ -58,12 +60,26 @@ const OrderSchema = new mongoose_1.Schema({
     paidAt: { type: Date }, // ✅ ADD THIS
     status: {
         type: String,
-        enum: ["Pending", "Processing", "Shipped", "Delivered", "Cancelled"],
+        enum: ["Pending", "Processing", "Shipped", "Out for Delivery", "Delivered", "Cancelled", "RTO"],
         default: "Pending",
+    },
+    shipment: {
+        awb: { type: String },
+        courierStatus: { type: String },
+        labelUrl: { type: String },
+        trackingUrl: { type: String },
+        shippedAt: { type: Date },
+        deliveredAt: { type: Date },
+    },
+    refund: {
+        id: { type: String },
+        amount: { type: Number },
+        status: { type: String },
+        refundedAt: { type: Date },
     },
     paymentStatus: {
         type: String,
-        enum: ["Paid", "Pending", "Failed"],
+        enum: ["Paid", "Pending", "Failed", "Refunded"],
         default: "Pending",
     },
     paymentMethod: { type: String, required: true },

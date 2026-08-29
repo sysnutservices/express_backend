@@ -13,6 +13,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.markCouponUsed = exports.validateCoupon = exports.updateCoupon = exports.deleteCoupon = exports.getCoupons = exports.createCoupon = void 0;
+exports.validateAndComputeCoupon = validateAndComputeCoupon;
 const Coupon_1 = __importDefault(require("../models/Coupon"));
 // -------------------------------
 // CREATE COUPON
@@ -81,48 +82,39 @@ const updateCoupon = (req, res) => __awaiter(void 0, void 0, void 0, function* (
     }
 });
 exports.updateCoupon = updateCoupon;
-// -------------------------------
-// VALIDATE COUPON (APPLY COUPON)
-// -------------------------------
+// Single source of truth for coupon rules (active/expiry/usage-limit/min-
+// order-value/percentage-vs-fixed) — both the checkout "Apply Coupon"
+// preview (validateCoupon below) and the actual order-creation path
+// (orderController.createOrder) call this now. createOrder used to
+// re-lookup the coupon itself and just subtract `value` flat regardless of
+// type, which meant an expired/disabled/limit-exceeded/below-minimum
+// coupon still worked at real checkout, and percentage coupons never
+// applied a percentage.
+function validateAndComputeCoupon(code, cartTotal) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const coupon = yield Coupon_1.default.findOne({ code: code.toUpperCase() });
+        if (!coupon)
+            return { valid: false, message: "Invalid coupon", discountAmount: 0, finalAmount: cartTotal };
+        if (!coupon.isActive)
+            return { valid: false, message: "Coupon is disabled", discountAmount: 0, finalAmount: cartTotal };
+        if (coupon.expiryDate < new Date())
+            return { valid: false, message: "Coupon expired", discountAmount: 0, finalAmount: cartTotal };
+        if (coupon.usedCount >= coupon.usageLimit)
+            return { valid: false, message: "Coupon usage limit reached", discountAmount: 0, finalAmount: cartTotal };
+        if (cartTotal < coupon.minOrderValue) {
+            return { valid: false, message: `Minimum order value is ₹${coupon.minOrderValue}`, discountAmount: 0, finalAmount: cartTotal };
+        }
+        let discountAmount = coupon.type === "percentage" ? (cartTotal * coupon.value) / 100 : coupon.value;
+        if (discountAmount > cartTotal)
+            discountAmount = cartTotal;
+        return { valid: true, coupon, discountAmount, finalAmount: cartTotal - discountAmount };
+    });
+}
 const validateCoupon = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const { code, cartTotal } = req.body;
-        const coupon = yield Coupon_1.default.findOne({ code: code.toUpperCase() });
-        if (!coupon)
-            return res.json({ valid: false, message: "Invalid coupon" });
-        // Check active
-        if (!coupon.isActive)
-            return res.json({ valid: false, message: "Coupon is disabled" });
-        // Check expiry
-        if (coupon.expiryDate < new Date())
-            return res.json({ valid: false, message: "Coupon expired" });
-        // Check usage limit
-        if (coupon.usedCount >= coupon.usageLimit)
-            return res.json({ valid: false, message: "Coupon usage limit reached" });
-        // Check minimum amount
-        if (cartTotal < coupon.minOrderValue)
-            return res.json({
-                valid: false,
-                message: `Minimum order value is ₹${coupon.minOrderValue}`,
-            });
-        // Calculate discount
-        let discountAmount = 0;
-        if (coupon.type === "percentage") {
-            discountAmount = (cartTotal * coupon.value) / 100;
-        }
-        else {
-            discountAmount = coupon.value;
-        }
-        // Cap discount (optional logic)
-        if (discountAmount > cartTotal)
-            discountAmount = cartTotal;
-        const finalAmount = cartTotal - discountAmount;
-        res.json({
-            valid: true,
-            coupon,
-            discountAmount,
-            finalAmount,
-        });
+        const result = yield validateAndComputeCoupon(code, cartTotal);
+        res.json(result);
     }
     catch (err) {
         res.status(500).json({ message: "Error validating coupon", error: err });

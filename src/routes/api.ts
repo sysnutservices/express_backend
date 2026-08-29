@@ -1,5 +1,12 @@
 import express from 'express';
 import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage } from '../controllers/productController';
+import {
+    uploadOriginal, uploadOriginalMiddleware, listProductImages, processRootImage,
+    updateVersionSettings, approveVersion, rejectVersion, returnVersionToReview,
+    reorderProductImages, publishProduct, getUsageSummary, getUsageByProductHandler,
+    deleteRootImage,
+} from '../controllers/productImageController';
+import { getAiSettingsStatus, updateAiSettings, testAiConnection } from '../controllers/aiSettingsController';
 import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
 import { getUsers, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
@@ -44,6 +51,29 @@ router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
 // file (or an already-hosted URL, for reprocessing) and returns the hosted
 // result — called by the admin form before Save, not part of the product CRUD.
 router.post('/products/process-image', protect, admin, upload.single('image'), processImage);
+
+// OpenAI GPT Image 2 + Sharp product-image workflow (original -> AI version
+// -> review -> approve -> publish). Kept fully separate from the routes
+// above: those still serve the create-new-product flow's PhotoRoom pipeline
+// unchanged (see productImageOrchestrator.ts for why).
+router.post('/products/:productId/images/upload-original', protect, admin, uploadOriginalMiddleware, uploadOriginal);
+router.get('/products/:productId/images', protect, admin, listProductImages);
+router.post('/products/images/:rootImageId/process', protect, admin, processRootImage);
+router.patch('/products/images/versions/:versionId/settings', protect, admin, updateVersionSettings);
+router.post('/products/images/versions/:versionId/approve', protect, admin, approveVersion);
+router.post('/products/images/versions/:versionId/reject', protect, admin, rejectVersion);
+router.post('/products/images/versions/:versionId/return-to-review', protect, admin, returnVersionToReview);
+router.delete('/products/images/:rootImageId', protect, admin, deleteRootImage);
+router.patch('/products/:productId/images/reorder', protect, admin, reorderProductImages);
+router.post('/products/:productId/images/publish', protect, admin, publishProduct);
+router.get('/admin/ai-usage/summary', protect, admin, getUsageSummary);
+router.get('/admin/ai-usage/by-product', protect, admin, getUsageByProductHandler);
+
+// OPENAI_API_KEY management — written to the backend's .env file, never the
+// database, never echoed back in a response (see aiSettingsController.ts).
+router.get('/admin/ai-settings', protect, admin, getAiSettingsStatus);
+router.put('/admin/ai-settings', protect, admin, updateAiSettings);
+router.post('/admin/ai-settings/test', protect, admin, testAiConnection);
 
 // Reviews — one per user per product, createReview upserts (see controller).
 router.get('/reviews/featured', publicCache, getFeaturedReviews);

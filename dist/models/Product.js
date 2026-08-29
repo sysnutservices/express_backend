@@ -33,7 +33,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Category = exports.DEFAULT_CONFIG_OPTIONS = void 0;
+exports.Category = exports.USE_CASES = exports.DEFAULT_CONFIG_OPTIONS = void 0;
 const mongoose_1 = __importStar(require("mongoose"));
 exports.DEFAULT_CONFIG_OPTIONS = {
     ram: [
@@ -47,11 +47,53 @@ exports.DEFAULT_CONFIG_OPTIONS = {
         { label: "1TB SSD", value: "1TB", price: 6000 },
     ],
     warranty: [
-        { label: "1 Year Warranty", value: "1 Year", price: 0 },
-        { label: "2 Year Coverage", value: "2 Year", price: 2499 },
-        { label: "3 Year Premium", value: "3 Year", price: 4499 },
+        { label: "6 Months Warranty", value: "6 Months", price: 0 },
+        { label: "1 Year Warranty", value: "1 Year", price: 1500 },
+        { label: "2 Year Warranty", value: "2 Year", price: 2999 },
     ],
 };
+// Controlled vocabulary the recommendation engine (lib/product-recommendation.ts
+// on the frontend) matches against — keep in sync with USE_CASES there.
+exports.USE_CASES = [
+    "student",
+    "office",
+    "programming",
+    "design",
+    "gaming",
+    "everyday",
+];
+const QUALITY_STATUS_VALUES = ["passed", "minor-wear", "failed"];
+// Every field here is optional with NO default — an admin who hasn't
+// inspected/entered data for a listing gets `undefined`, not a fabricated
+// "passed". The Quality Report UI only ever renders a field it actually got
+// a value for; everything else falls back to the general 40-point-inspection
+// claim, never an invented checkmark or percentage.
+//
+// This is architected per-listing (on Product), not per-serial-number: this
+// schema has a `stock` count, meaning one listing can represent more than
+// one physical unit. If Lapshark starts tracking individual units by serial
+// number, this belongs on a separate per-unit collection instead — putting
+// exact-unit data (a specific battery %, a specific serial) on a
+// multi-stock listing would misrepresent every unit that isn't the one
+// inspected. Confirm actual stock-per-listing practice before entering real
+// numbers here.
+const QualityReportSchema = new mongoose_1.Schema({
+    batteryHealthPercent: { type: Number, min: 0, max: 100 },
+    storageHealthPercent: { type: Number, min: 0, max: 100 },
+    displayStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    keyboardStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    trackpadStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    webcamStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    speakerStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    microphoneStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    wifiStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    bluetoothStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    portsStatus: { type: String, enum: QUALITY_STATUS_VALUES },
+    physicalConditionNotes: { type: String },
+    serialVerified: { type: Boolean },
+    technicianChecked: { type: Boolean },
+    inspectedAt: { type: Date },
+}, { _id: false });
 exports.Category = {
     BUSINESS: "Business Laptops",
     GAMING: "Gaming Laptops",
@@ -101,9 +143,28 @@ const ProductSchema = new mongoose_1.Schema({
     isTrending: { type: Boolean, default: false },
     isBestDeal: { type: Boolean, default: false },
     condition: {
+        // "New" included alongside the refurbished grades: the admin form
+        // (app/admin/(dashboard)/products/page.tsx) already offers it as an
+        // option for the rare brand-new accessory/listing.
         type: String,
+        enum: ["Like New", "Excellent", "Good", "New"],
         default: "Excellent",
     },
+    useCases: {
+        type: [{ type: String, enum: exports.USE_CASES }],
+        default: [],
+        index: true,
+    },
+    performanceTier: {
+        type: String,
+        enum: ["basic", "balanced", "high-performance"],
+    },
+    tags: { type: [String], default: [] },
+    qualityReport: { type: QualityReportSchema, default: undefined },
+    weightKg: { type: Number, default: 2.5 },
+    lengthCm: { type: Number, default: 35 },
+    widthCm: { type: Number, default: 25 },
+    heightCm: { type: Number, default: 8 },
     // ⭐ Added CONFIG inside product
     configOptions: {
         ram: {
