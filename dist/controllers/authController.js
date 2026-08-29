@@ -12,7 +12,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateProfile = exports.getAddresses = exports.setDefaultAddress = exports.deleteAddress = exports.updateAddress = exports.addAddress = exports.blockUser = exports.getUsers = exports.adminLogin = exports.customerLogin = exports.sendOTP = void 0;
+exports.updateProfile = exports.getAddresses = exports.setDefaultAddress = exports.deleteAddress = exports.updateAddress = exports.addAddress = exports.forceLogoutUser = exports.blockUser = exports.getUsers = exports.adminLogin = exports.customerLogin = exports.sendOTP = void 0;
 const User_1 = __importDefault(require("../models/User"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
@@ -23,6 +23,7 @@ const generateToken = (user) => {
         id: user.id,
         name: user.name,
         role: user.role,
+        tokenVersion: user.tokenVersion,
     }, process.env.JWT_SECRET, { expiresIn: "30d" });
 };
 const otpStore = new Map();
@@ -92,7 +93,8 @@ const customerLogin = (req, res) => __awaiter(void 0, void 0, void 0, function* 
             token: generateToken({
                 id: user._id.toString(),
                 name: user.name || "",
-                role: "customer"
+                role: "customer",
+                tokenVersion: user.tokenVersion || 0
             })
         }
     });
@@ -114,6 +116,12 @@ const adminLogin = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
     if (!passwordMatch) {
         return res.status(401).json({ message: 'Invalid password' });
     }
+    // This issues a role: "admin" token below unconditionally — without this
+    // check, any user record with a matching email+password (not just real
+    // admins) would get one, regardless of their actual role in the DB.
+    if (user.role !== 'admin') {
+        return res.status(403).json({ message: 'Not authorized as admin' });
+    }
     return res.json({
         user: {
             _id: user._id,
@@ -123,7 +131,8 @@ const adminLogin = (req, res) => __awaiter(void 0, void 0, void 0, function* () 
         token: generateToken({
             id: user._id.toString(),
             name: user.name || "",
-            role: "admin"
+            role: "admin",
+            tokenVersion: user.tokenVersion || 0
         })
     });
 });
@@ -145,6 +154,20 @@ const blockUser = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     }
 });
 exports.blockUser = blockUser;
+// Invalidates every existing token for this user (see tokenVersion comment
+// on the User model + the check in authMiddleware.protect) — the account
+// stays active and they can log back in immediately with a fresh OTP, this
+// just ends whatever session(s) are currently active on any device.
+const forceLogoutUser = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const user = yield User_1.default.findByIdAndUpdate(req.params.id, { $inc: { tokenVersion: 1 } }, { new: true });
+    if (user) {
+        res.json({ success: true, tokenVersion: user.tokenVersion });
+    }
+    else {
+        res.status(404).json({ message: 'User not found' });
+    }
+});
+exports.forceLogoutUser = forceLogoutUser;
 // =========================================================
 // 1️⃣ ADD NEW ADDRESS
 // =========================================================

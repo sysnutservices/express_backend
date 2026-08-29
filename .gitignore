@@ -2,5 +2,8 @@
 node_modules
 yarn.lock
 uploads
+# Segmentation model weights (178MB) — downloaded on demand, not versioned.
+# See src/services/localSegmentation.ts for the download URL/checksum.
+/models/
 # GCP service-account key (contains a private key) — never commit this
 gen-lang-client-*.json

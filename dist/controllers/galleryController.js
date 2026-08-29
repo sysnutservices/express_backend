@@ -72,14 +72,12 @@ const uploadGalleryImage = (req, res) => __awaiter(void 0, void 0, void 0, funct
         const upload = yield (0, imagekit_1.uploadToImageKit)(req.file, "/lapshark/gallery");
         return res.status(201).json({
             success: true,
-            image: {
-                fileId: upload.fileId,
-                url: upload.url,
-                thumbnailUrl: upload.thumbnailUrl,
-                width: upload.width,
-                height: upload.height,
-                size: upload.size,
-            },
+            fileId: upload.fileId,
+            url: upload.url,
+            thumbnailUrl: upload.thumbnailUrl,
+            width: upload.width,
+            height: upload.height,
+            size: upload.size,
         });
     }
     catch (error) {

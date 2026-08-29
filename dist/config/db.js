@@ -15,7 +15,13 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // config/db.ts
 const mongoose_1 = __importDefault(require("mongoose"));
 const dotenv_1 = __importDefault(require("dotenv"));
+const dns_1 = __importDefault(require("dns"));
 dotenv_1.default.config();
+// Some Windows/VPN setups report a stale 127.0.0.1 resolver to Node's c-ares,
+// which breaks the SRV lookup mongodb+srv:// needs (OS-level DNS works fine).
+// ponytail: global override, scope to the mongo lookup only if this ever bites another consumer
+if (process.platform === "win32")
+    dns_1.default.setServers(["8.8.8.8", "1.1.1.1"]);
 const connectDB = () => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const mongoURI = process.env.MONGO_URI;

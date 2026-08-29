@@ -12,9 +12,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.VIEW_PRESETS = exports.DEFAULT_SETTINGS = void 0;
+exports.PROCESSING_CONFIG_VERSION = exports.VIEW_PRESETS = exports.DEFAULT_ENHANCEMENT = exports.DEFAULT_SETTINGS = void 0;
 exports.removeBackground = removeBackground;
 exports.composeStudioImage = composeStudioImage;
+exports.computeTargetSize = computeTargetSize;
+exports.computePosition = computePosition;
+exports.generateVariants = generateVariants;
+exports.validateMasterImage = validateMasterImage;
+exports.resolveViewSettings = resolveViewSettings;
+exports.viewPresetToStudioSettings = viewPresetToStudioSettings;
 exports.processProductImage = processProductImage;
 const sharp_1 = __importDefault(require("sharp"));
 exports.DEFAULT_SETTINGS = {
@@ -45,17 +51,33 @@ const POSITION_ANCHORS = {
     left: { x: 0, y: 0.5 },
     right: { x: 1, y: 0.5 },
 };
+// Layer 1 of the 3-way merge (DEFAULT -> VIEW_PRESET -> MANUAL). Every view
+// preset omits these, so they always come from here unless a caller overrides
+// them explicitly — keeps enhancement conservative by default everywhere.
+exports.DEFAULT_ENHANCEMENT = {
+    brightness: 1,
+    contrast: 1,
+    saturation: 1,
+    sharpen: true,
+};
 // Explicit per-view occupancy/position/shadow instead of one fixed
 // compact/standard/spacious padding for every angle. Tune freely per view —
-// nothing else in the pipeline depends on these specific numbers.
+// nothing else in the pipeline depends on these specific numbers. Target
+// occupancy ranges: open front 86-90%, side/closed-lid/bottom 82-88% — these
+// only set the SCALE the bbox-cropped product is resized to; how tight the
+// bbox itself is comes from localSegmentation.ts's crop, not these numbers.
 exports.VIEW_PRESETS = {
-    open_front: { scale: 0.88, position: "center-bottom", shadow: true, shadowOffsetY: 24 },
-    closed_top: { scale: 0.86, position: "center", shadow: false },
-    closed_rear: { scale: 0.84, position: "center", shadow: true, shadowOffsetY: 18 },
-    bottom: { scale: 0.86, position: "center", shadow: false },
-    left_side: { scale: 0.82, position: "center", shadow: true },
-    right_side: { scale: 0.82, position: "center", shadow: true },
-    custom: { scale: 0.85, position: "center", shadow: false },
+    open_front: { scale: 0.88, position: "center-bottom", yOffset: -20, shadow: false },
+    open_angle: { scale: 0.87, position: "center", shadow: false },
+    closed_top: { scale: 0.88, position: "center", shadow: false },
+    closed_angle: { scale: 0.87, position: "center", shadow: false },
+    closed_rear: { scale: 0.86, position: "center", shadow: true, shadowOffsetY: 18 },
+    bottom: { scale: 0.88, position: "center", shadow: false },
+    left_side: { scale: 0.87, position: "center", shadow: false },
+    right_side: { scale: 0.87, position: "center", shadow: false },
+    ports: { scale: 0.88, position: "center", shadow: false },
+    detail: { scale: 0.86, position: "center", shadow: false },
+    custom: { scale: 0.86, position: "center", shadow: false },
 };
 /**
  * Removes the background via the PhotoRoom Remove Background API, returning
@@ -106,35 +128,81 @@ function toStudioSettings(settings) {
         shadow: settings.shadow,
     };
 }
+// scale is the trimmed product's max occupancy of the canvas, e.g. 0.88 on a
+// 2000px canvas -> fit inside 1760x1760. Exported so scale math is testable
+// without spinning up Sharp.
+function computeTargetSize(canvasSize, scale) {
+    return Math.round(canvasSize * scale);
+}
+// Exact x/y compositing coordinates for a given anchor + offsets, clamped so
+// the product can never be pushed outside the canvas by an extreme offset.
+function computePosition(canvasWidth, canvasHeight, productWidth, productHeight, position, xOffset = 0, yOffset = 0) {
+    const anchor = POSITION_ANCHORS[position];
+    const left = Math.round(anchor.x * (canvasWidth - productWidth)) + xOffset;
+    const top = Math.round(anchor.y * (canvasHeight - productHeight)) + yOffset;
+    return {
+        left: Math.max(0, Math.min(left, Math.max(0, canvasWidth - productWidth))),
+        top: Math.max(0, Math.min(top, Math.max(0, canvasHeight - productHeight))),
+    };
+}
+// Conservative source-photo enhancement: auto-exposure normalize (always),
+// then optional brightness/saturation (sharp modulate), contrast (linear
+// stretch around the midpoint), and mild sharpening. Never touches hue or
+// geometry, so it can't alter the physical product — only how the photo of
+// it looks.
+function applyEnhancement(buffer, settings) {
+    return __awaiter(this, void 0, void 0, function* () {
+        var _a, _b, _c;
+        let img = (0, sharp_1.default)(buffer).normalize();
+        const brightness = (_a = settings.brightness) !== null && _a !== void 0 ? _a : 1;
+        const saturation = (_b = settings.saturation) !== null && _b !== void 0 ? _b : 1;
+        if (brightness !== 1 || saturation !== 1) {
+            img = img.modulate({ brightness, saturation });
+        }
+        const contrast = (_c = settings.contrast) !== null && _c !== void 0 ? _c : 1;
+        if (contrast !== 1) {
+            img = img.linear(contrast, 128 * (1 - contrast));
+        }
+        if (settings.sharpen !== false) {
+            img = img.sharpen({ sigma: 0.5 });
+        }
+        return img.toBuffer();
+    });
+}
 // 1. Trim transparent empty space (real bounding box, never PhotoRoom's raw
-//    output dimensions) -> 2. resize to `scale` occupancy of the canvas ->
-//    3. calculate exact composite coordinates -> 4. optional soft shadow ->
-//    5. shadow composited first, product second -> 6. flatten onto white
-//    (unless transparent requested) -> 7. export WebP q92.
+//    output dimensions) -> 2. conservative enhancement -> 3. resize to
+//    `scale` occupancy of the canvas -> 4. calculate exact composite
+//    coordinates -> 5. optional soft shadow -> 6. shadow composited first,
+//    product second -> 7. flatten onto white (unless transparent requested)
+//    -> 8. export in the requested format.
 function renderStudioImage(cleanedBuffer, settings) {
     return __awaiter(this, void 0, void 0, function* () {
-        var _a, _b, _c, _d, _e, _f, _g;
+        var _a, _b, _c, _d, _e, _f, _g, _h, _j;
         const canvasSize = settings.canvasSize || MASTER_SIZE;
         let productBuffer = cleanedBuffer;
         try {
-            productBuffer = yield (0, sharp_1.default)(cleanedBuffer).trim().toBuffer();
+            // No explicit `background` — sharp defaults to the top-left pixel's own
+            // color, which is what makes this work for both cutout shapes this
+            // function receives: a transparent (alpha=0) PhotoRoom cutout, and an
+            // opaque near-white OpenAI edit. A wider threshold than sharp's default
+            // (10) tolerates the mild vignette/gradient/JPEG noise real AI output
+            // has near its edges without risking eating into product pixels — a
+            // dark laptop chassis differs from white by ~200+, far above this.
+            productBuffer = yield (0, sharp_1.default)(cleanedBuffer).trim({ threshold: 15 }).toBuffer();
         }
-        catch (_h) {
+        catch (_k) {
             // Edges weren't uniform enough to trim (e.g. already tight crop) — use
             // the untrimmed cutout, composition below still centers it correctly.
         }
-        // scale is the trimmed product's max occupancy of the canvas, e.g. 0.88 on
-        // a 2000px canvas -> fit inside 1760x1760, aspect ratio preserved.
-        const targetSize = Math.round(canvasSize * settings.scale);
+        productBuffer = yield applyEnhancement(productBuffer, settings);
+        const targetSize = computeTargetSize(canvasSize, settings.scale);
         const resizedProduct = yield (0, sharp_1.default)(productBuffer)
             .resize({ width: targetSize, height: targetSize, fit: "inside", withoutEnlargement: false })
             .toBuffer();
         const resizedMeta = yield (0, sharp_1.default)(resizedProduct).metadata();
         const productWidth = (_a = resizedMeta.width) !== null && _a !== void 0 ? _a : targetSize;
         const productHeight = (_b = resizedMeta.height) !== null && _b !== void 0 ? _b : targetSize;
-        const anchor = POSITION_ANCHORS[settings.position];
-        const left = Math.round(anchor.x * (canvasSize - productWidth)) + ((_c = settings.xOffset) !== null && _c !== void 0 ? _c : 0);
-        const top = Math.round(anchor.y * (canvasSize - productHeight)) + ((_d = settings.yOffset) !== null && _d !== void 0 ? _d : 0);
+        const { left, top } = computePosition(canvasSize, canvasSize, productWidth, productHeight, settings.position, (_c = settings.xOffset) !== null && _c !== void 0 ? _c : 0, (_d = settings.yOffset) !== null && _d !== void 0 ? _d : 0);
         const compositeLayers = [];
         if (settings.shadow) {
             // Soft drop shadow: blur the product's own alpha silhouette, fade it
@@ -145,7 +213,7 @@ function renderStudioImage(cleanedBuffer, settings) {
             const shadowAlpha = yield (0, sharp_1.default)(resizedProduct)
                 .ensureAlpha()
                 .extractChannel(3)
-                .linear(0.35, 0)
+                .linear((_h = settings.shadowOpacity) !== null && _h !== void 0 ? _h : 0.35, 0)
                 .blur(shadowBlur)
                 .toBuffer();
             const shadowLayer = yield (0, sharp_1.default)({
@@ -163,37 +231,127 @@ function renderStudioImage(cleanedBuffer, settings) {
         if (settings.background !== "transparent") {
             masterPipeline = masterPipeline.flatten({ background: settings.background || "#ffffff" });
         }
-        return masterPipeline.webp({ quality: 92 }).toBuffer();
+        const quality = (_j = settings.quality) !== null && _j !== void 0 ? _j : 92;
+        switch (settings.outputFormat) {
+            case "jpeg":
+                return masterPipeline.jpeg({ quality }).toBuffer();
+            case "png":
+                return masterPipeline.png().toBuffer();
+            default:
+                return masterPipeline.webp({ quality }).toBuffer();
+        }
     });
+}
+const VARIANT_SIZES = { product: 1200, thumbnail: 500 };
+// Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes),
+// as opposed to promptVersion which versions the OpenAI prompt text. Both
+// feed the processing fingerprint in imageCostControl.ts — bump this only
+// when a change here should invalidate cached/approved results.
+exports.PROCESSING_CONFIG_VERSION = "v1";
+// Downscales the already-composited master into the catalogue's other two
+// sizes. No second PhotoRoom call and no re-compositing — same master pixels,
+// just resized, so all three sizes stay visually identical.
+function generateVariants(masterBuffer_1) {
+    return __awaiter(this, arguments, void 0, function* (masterBuffer, masterSize = MASTER_SIZE) {
+        const [product, thumbnail] = yield Promise.all(Object.values(VARIANT_SIZES).map((size) => (0, sharp_1.default)(masterBuffer).resize(size, size).webp({ quality: 90 }).toBuffer()));
+        return {
+            master: { buffer: masterBuffer, width: masterSize, height: masterSize },
+            product: { buffer: product, width: VARIANT_SIZES.product, height: VARIANT_SIZES.product },
+            thumbnail: { buffer: thumbnail, width: VARIANT_SIZES.thumbnail, height: VARIANT_SIZES.thumbnail },
+        };
+    });
+}
+// Lightweight, deterministic sanity checks on a composed master — catches
+// gross pipeline failures (wrong dimensions, near-empty or edge-to-edge
+// product, a flatten that didn't actually produce white) so a version can
+// be flagged for closer manual review instead of silently reaching
+// READY_FOR_REVIEW looking obviously broken. Never blocks approval by
+// itself — informational only (see ProductImage.qualityWarning). This is
+// NOT a perceptual/similarity check against the original (out of scope for
+// this pass) — it only catches "did composition itself go wrong."
+function validateMasterImage(masterBuffer) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const meta = yield (0, sharp_1.default)(masterBuffer).metadata();
+        if (meta.width !== MASTER_SIZE || meta.height !== MASTER_SIZE) {
+            return `Unexpected master dimensions: ${meta.width}x${meta.height} (expected ${MASTER_SIZE}x${MASTER_SIZE})`;
+        }
+        // Checked before occupancy: the occupancy trim below assumes a white
+        // background to trim against, so a wrong background color would make
+        // that check unreliable too — catch the more specific problem first.
+        const corners = yield Promise.all([
+            { left: 2, top: 2 },
+            { left: MASTER_SIZE - 3, top: 2 },
+            { left: 2, top: MASTER_SIZE - 3 },
+            { left: MASTER_SIZE - 3, top: MASTER_SIZE - 3 },
+        ].map((pos) => (0, sharp_1.default)(masterBuffer).extract(Object.assign(Object.assign({}, pos), { width: 1, height: 1 })).raw().toBuffer()));
+        const offWhite = corners.some((px) => px[0] < 250 || px[1] < 250 || px[2] < 250);
+        if (offWhite) {
+            return "Background corner is not clean white — check compositing";
+        }
+        let trimmed;
+        try {
+            trimmed = yield (0, sharp_1.default)(masterBuffer).trim({ background: "#ffffff", threshold: 10 }).toBuffer({ resolveWithObject: true });
+        }
+        catch (_a) {
+            return "Could not detect a product region in the composed image";
+        }
+        const occW = trimmed.info.width / MASTER_SIZE;
+        const occH = trimmed.info.height / MASTER_SIZE;
+        if (occW < 0.4 && occH < 0.4) {
+            return `Product occupies only ~${Math.round(Math.max(occW, occH) * 100)}% of the frame — check for excessive whitespace`;
+        }
+        if (occW > 0.99 || occH > 0.99) {
+            return "Product touches the canvas edge — check for cropping";
+        }
+        return null;
+    });
+}
+// 3-way merge, manual settings always win: DEFAULT_ENHANCEMENT -> VIEW_PRESET
+// -> settings. Extracted out of processProductImage so
+// productImageOrchestrator.ts's OpenAI-based pipeline can reuse the exact
+// same resolution instead of duplicating it.
+function resolveViewSettings(viewType, settings) {
+    var _a;
+    const preset = (_a = exports.VIEW_PRESETS[viewType]) !== null && _a !== void 0 ? _a : exports.VIEW_PRESETS.custom;
+    return Object.assign(Object.assign(Object.assign({}, exports.DEFAULT_ENHANCEMENT), preset), settings);
+}
+// Maps a resolved ViewPreset onto the StudioSettings shape renderStudioImage
+// expects — same mapping processProductImage's v2 branch always did inline.
+function viewPresetToStudioSettings(merged, background = "#ffffff") {
+    return {
+        canvasSize: MASTER_SIZE,
+        scale: merged.scale,
+        position: merged.position,
+        xOffset: merged.xOffset,
+        yOffset: merged.yOffset,
+        background,
+        shadow: merged.shadow,
+        shadowOffsetX: merged.shadowOffsetX,
+        shadowOffsetY: merged.shadowOffsetY,
+        shadowBlur: merged.shadowBlur,
+        shadowOpacity: merged.shadowOpacity,
+        brightness: merged.brightness,
+        contrast: merged.contrast,
+        saturation: merged.saturation,
+        sharpen: merged.sharpen,
+        outputFormat: merged.outputFormat,
+        quality: merged.quality,
+    };
 }
 function processProductImage(inputOrOptions, mimeType) {
     return __awaiter(this, void 0, void 0, function* () {
-        var _a;
         if (Buffer.isBuffer(inputOrOptions)) {
             // Legacy call shape: same behavior as before (DEFAULT_SETTINGS, "custom"
-            // framing), returns a bare buffer.
+            // framing), returns a bare buffer. renderStudioImage trims + enhances
+            // internally, so no pre-processing needed here.
             const cutout = yield removeBackground(inputOrOptions, mimeType);
-            const cleaned = yield (0, sharp_1.default)(cutout).normalize().sharpen({ sigma: 0.5 }).toBuffer();
-            return composeStudioImage(cleaned, exports.DEFAULT_SETTINGS);
+            return composeStudioImage(cutout, exports.DEFAULT_SETTINGS);
         }
         const { input, mimeType: mt, viewType = "custom", settings } = inputOrOptions;
-        const preset = (_a = exports.VIEW_PRESETS[viewType]) !== null && _a !== void 0 ? _a : exports.VIEW_PRESETS.custom;
-        const merged = Object.assign(Object.assign({}, preset), settings);
+        const merged = resolveViewSettings(viewType, settings);
         const cutout = yield removeBackground(input, mt);
-        const cleaned = yield (0, sharp_1.default)(cutout).normalize().sharpen({ sigma: 0.5 }).toBuffer();
-        const studioSettings = {
-            canvasSize: MASTER_SIZE,
-            scale: merged.scale,
-            position: merged.position,
-            xOffset: merged.xOffset,
-            yOffset: merged.yOffset,
-            background: "#ffffff",
-            shadow: merged.shadow,
-            shadowOffsetX: merged.shadowOffsetX,
-            shadowOffsetY: merged.shadowOffsetY,
-            shadowBlur: merged.shadowBlur,
-        };
-        const buffer = yield renderStudioImage(cleaned, studioSettings);
+        const studioSettings = viewPresetToStudioSettings(merged);
+        const buffer = yield renderStudioImage(cutout, studioSettings);
         return {
             buffer,
             width: MASTER_SIZE,
@@ -201,6 +359,7 @@ function processProductImage(inputOrOptions, mimeType) {
             viewType,
             appliedScale: merged.scale,
             appliedPosition: merged.position,
+            appliedSettings: merged,
         };
     });
 }
