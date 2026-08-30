@@ -1,7 +1,7 @@
 import ImageKit from "imagekit";
 import dotenv from "dotenv";
-import path from "path";
 import slugify from "slugify";
+import sharp from "sharp";
 dotenv.config();
 export const imagekit = new ImageKit({
     publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
@@ -18,16 +18,31 @@ function seoFilename(hint: string | undefined, fallback: string, ext = ""): stri
     return (slug || fallback).slice(0, 100) + ext;
 }
 
+// Isolated so the actual format-conversion logic (get this wrong and every
+// uploaded image silently keeps its original format) can be exercised by
+// imagekit.selftest.ts without touching the network/API key the upload
+// functions themselves need. gif is included in this conversion; an
+// animated one loses its animation (sharp keeps only the first frame unless
+// told otherwise), but product/site photos are never actually animated in
+// practice.
+export async function toWebpBuffer(buffer: Buffer): Promise<Buffer> {
+    return sharp(buffer).webp({ quality: 90 }).toBuffer();
+}
+
+// Every direct-upload path (product image fallback, gallery/site-content
+// uploads) funnels through this one function, so converting to WebP here —
+// once — covers all of them instead of needing the same sharp call at every
+// call site.
 export const uploadToImageKit = async (
     file: Express.Multer.File,
     folder: string,
     nameHint?: string
 ) => {
-    const ext = path.extname(file.originalname);
-    const filename = seoFilename(nameHint, "product-image", ext);
+    const webpBuffer = await toWebpBuffer(file.buffer);
+    const filename = seoFilename(nameHint, "product-image", ".webp");
 
     const uploaded = await imagekit.upload({
-        file: file.buffer,        // buffer (memoryStorage)
+        file: webpBuffer,
         fileName: filename,
         folder,
     });
@@ -36,14 +51,20 @@ export const uploadToImageKit = async (
 };
 
 // Same as uploadToImageKit but for an already-hosted remote image (e.g. from
-// the CRM's product sync) — ImageKit's own upload API accepts a URL directly
-// as `file` and fetches the bytes server-side, so no separate download step
-// is needed here.
+// the CRM's product sync). Fetches the bytes ourselves (rather than handing
+// ImageKit the URL to fetch server-side, the old approach) so they can be
+// converted to WebP first — otherwise a CRM-synced image would keep whatever
+// format the source URL served.
 export const uploadUrlToImageKit = async (url: string, folder: string, nameHint?: string) => {
-    const filename = seoFilename(nameHint, "product-image");
+    const filename = seoFilename(nameHint, "product-image", ".webp");
+
+    const fetched = await fetch(url);
+    if (!fetched.ok) throw new Error(`Could not fetch source image for upload (${fetched.status})`);
+    const buffer = Buffer.from(await fetched.arrayBuffer());
+    const webpBuffer = await toWebpBuffer(buffer);
 
     const uploaded = await imagekit.upload({
-        file: url,
+        file: webpBuffer,
         fileName: filename,
         folder,
     });
