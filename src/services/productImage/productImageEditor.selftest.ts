@@ -3,14 +3,37 @@
 // matching the codebase's selftest convention.
 // Run: npx ts-node src/services/productImage/productImageEditor.selftest.ts (or `npm test`)
 import assert from "assert";
-import { computeEditSize, orientationOf } from "./productImageEditor";
+import sharp from "sharp";
+import { computeEditSize, orientationOf, verifyMaskRespected } from "./productImageEditor";
 
 function parseSize(s: string) {
   const [w, h] = s.split("x").map(Number);
   return { w, h };
 }
 
-function main() {
+// width x height RGB PNG, left half one solid color, right half another —
+// built as one raw buffer (no compositing) so there's no ambiguity about
+// how sharp's create/composite handles alpha.
+async function splitPng(
+  width: number,
+  height: number,
+  left: [number, number, number],
+  right: [number, number, number]
+): Promise<Buffer> {
+  const raw = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 3;
+      const [r, g, b] = x < width / 2 ? left : right;
+      raw[i] = r;
+      raw[i + 1] = g;
+      raw[i + 2] = b;
+    }
+  }
+  return sharp(raw, { raw: { width, height, channels: 3 } }).png().toBuffer();
+}
+
+async function main() {
   // computeEditSize matches the source's own aspect ratio (never forces a
   // square) so OpenAI edits the photo it was given instead of being asked
   // to fit content into a shape it wasn't given — this is the exact fix for
@@ -41,7 +64,37 @@ function main() {
   assert.strictEqual(orientationOf(2000, 2000), "square");
   assert.notStrictEqual(orientationOf(4032, 3024), orientationOf(3024, 4032), "a rotated result must classify differently from its source");
 
+  // verifyMaskRespected: the actual mask-compliance safety net — a laptop
+  // (blue, left half) with white background (right half). Left half is the
+  // preserved region; right half is what OpenAI was free to regenerate.
+  const W = 4, H = 4;
+  const alpha = Buffer.alloc(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) alpha[y * W + x] = x < W / 2 ? 255 : 0;
+
+  const preserved: [number, number, number] = [20, 40, 200];
+  const source = await splitPng(W, H, preserved, [255, 255, 255]);
+
+  // A compliant result: preserved (left) half untouched, edited (right)
+  // half repainted to something else entirely.
+  const compliantResult = await splitPng(W, H, preserved, [10, 200, 10]);
+  assert.strictEqual(
+    await verifyMaskRespected(source, alpha, W, H, compliantResult, W, H),
+    true,
+    "changing only the editable region must pass"
+  );
+
+  // A violation: the preserved (left) half itself got repainted.
+  const violatingResult = await splitPng(W, H, [10, 200, 10], [10, 200, 10]);
+  assert.strictEqual(
+    await verifyMaskRespected(source, alpha, W, H, violatingResult, W, H),
+    false,
+    "changing the preserved region must fail"
+  );
+
   console.log("productImageEditor.selftest: all assertions passed");
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

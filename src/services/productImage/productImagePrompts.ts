@@ -14,7 +14,12 @@ import { ProductImageType } from "./productImageTypes";
 // in this pipeline (composeStudioImage) and now explicitly stay Sharp's job
 // here too; productImageEditor.ts also hard-rejects (and retries) any
 // result whose orientation doesn't match the source, as a backstop.
-export const PRODUCT_IMAGE_PROMPT_VERSION = "v1.1";
+//
+// v1.2: prompt text itself is unchanged, but product preservation now also
+// rides on a hard OpenAI edit mask (see productImageEditor.ts's
+// buildPreserveMask) instead of the prompt alone — a materially different
+// generation, so old v1.1 results must not be reused as if identical.
+export const PRODUCT_IMAGE_PROMPT_VERSION = "v1.2";
 
 // Verbatim foundation prompt — shared preservation rules every image type
 // builds on. Do not edit ad hoc per type; add a short, narrow addition below

@@ -258,11 +258,20 @@ export function boxMorph(src: Uint8Array, width: number, height: number, radius:
   return out;
 }
 
-// Returns an RGBA PNG cutout, already cropped tightly to the detected
-// product's bounding box — a drop-in replacement for PhotoRoom's
-// removeBackground() as the input to composeStudioImage/renderStudioImage
-// in imageProcessing.ts (same downstream Sharp compositing, unchanged).
-export async function removeBackgroundLocal(inputBuffer: Buffer): Promise<Buffer> {
+export interface FullFrameAlpha {
+  alpha: Buffer; // one byte per pixel, 0 or 255, row-major, width*height long
+  width: number;
+  height: number;
+}
+
+// The full segmentation pipeline (model inference, largest-component,
+// hole-fill, opening, closing) resized back to the ORIGINAL photo's own
+// resolution — no bbox crop. Shared by removeBackgroundLocal (which crops
+// it for the catalogue_safe cutout) and by productImageEditor's ai_edit mask
+// (which needs the alpha aligned to the full, uncropped frame to build an
+// OpenAI edit mask). Keeping this as one function means every consumer gets
+// the identical, already-hardened segmentation — no drift between them.
+export async function segmentFullFrameAlpha(inputBuffer: Buffer): Promise<FullFrameAlpha> {
   const session = await getSession();
   const meta = await sharp(inputBuffer).metadata();
   if (!meta.width || !meta.height) throw new Error("Could not read image dimensions");
@@ -361,14 +370,24 @@ export async function removeBackgroundLocal(inputBuffer: Buffer): Promise<Buffer
     );
   }
 
-  const bbox = computeBBoxFromMask(finalAlpha, meta.width, meta.height, 127);
+  return { alpha: finalAlpha, width: meta.width, height: meta.height };
+}
+
+// Returns an RGBA PNG cutout, already cropped tightly to the detected
+// product's bounding box — a drop-in replacement for PhotoRoom's
+// removeBackground() as the input to composeStudioImage/renderStudioImage
+// in imageProcessing.ts (same downstream Sharp compositing, unchanged).
+export async function removeBackgroundLocal(inputBuffer: Buffer): Promise<Buffer> {
+  const { alpha: finalAlpha, width, height } = await segmentFullFrameAlpha(inputBuffer);
+
+  const bbox = computeBBoxFromMask(finalAlpha, width, height, 127);
   if (!bbox) throw new Error("No product detected in image");
 
   const rgbBuffer = await sharp(inputBuffer).removeAlpha().raw().toBuffer();
   // Materialize before extract() — chaining joinChannel().extract() directly
   // silently no-ops the crop (a sharp chaining quirk, confirmed empirically).
-  const rgba = await sharp(rgbBuffer, { raw: { width: meta.width, height: meta.height, channels: 3 } })
-    .joinChannel(finalAlpha, { raw: { width: meta.width, height: meta.height, channels: 1 } })
+  const rgba = await sharp(rgbBuffer, { raw: { width, height, channels: 3 } })
+    .joinChannel(finalAlpha, { raw: { width, height, channels: 1 } })
     .png()
     .toBuffer();
   return sharp(rgba).extract(bbox).png().toBuffer();
