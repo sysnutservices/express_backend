@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { setEnvFileValue, isSafeEnvValue, maskSecret } from "../utils/envFile";
-import { testConnection } from "../services/openaiImageService";
+import { testConnection } from "../services/openaiClient";
 
 // Admin-only key management for OPENAI_API_KEY. Persists to the backend's
 // .env file (never the database, never echoed back to the frontend) —

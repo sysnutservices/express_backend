@@ -14,26 +14,21 @@ import {
   flattenMasterToWhite,
   analyzeExposure,
   analyzeReflection,
-  computeRegionChangePercent,
   PROCESSING_CONFIG_VERSION,
 } from "./imageProcessing";
 import { computeProcessingHash, estimateCost, checkBudgetAndLimits, recordUsage } from "./imageCostControl";
 import { removeBackgroundLocal } from "./localSegmentation";
-import {
-  buildLapsharkImagePrompt,
-  buildReflectionRemovalPrompt,
-  generateEcommerceEdit,
-  classifyOpenAIError,
-  IMAGE_PROMPT_VERSION,
-  REFLECTION_PROMPT_VERSION,
-} from "./openaiImageService";
+import { classifyOpenAIError } from "./openaiClient";
+import { editProductImage } from "./productImage/productImageEditor";
+import { PRODUCT_IMAGE_PROMPT_VERSION } from "./productImage/productImagePrompts";
 
 export type BrightnessMode = "auto" | "original"; // "manual" is just the caller explicitly setting settings.brightness/contrast — no separate mode value needed
+// "auto" and "on" currently behave identically — both detect+flag, never a
+// separate OpenAI call (see the note above the reflection check below for
+// why "on" no longer triggers its own edit). Kept as three values rather
+// than collapsing to a boolean so the API/UI contract from when this WAS a
+// three-way distinction doesn't need to change again.
 export type ReflectionMode = "off" | "auto" | "on";
-// A glare correction touching more than this share of the product region
-// (comparing the pre/post cutout) means the edit did more than reduce a
-// hotspot — flag for review rather than silently accept it.
-const REFLECTION_CHANGE_REVIEW_THRESHOLD = 15;
 
 // Two processing modes, chosen explicitly per request — never inferred:
 //
@@ -43,14 +38,16 @@ const REFLECTION_CHANGE_REVIEW_THRESHOLD = 15;
 //   model; every pixel inside the product silhouette is byte-identical to
 //   the source photo, so product-pixel alteration is structurally
 //   impossible, not just prompted against.
-// - "ai_edit" (opt-in only): OpenAI edits the background first, then the
-//   SAME local segmentation runs again on OpenAI's output — never trusting
-//   OpenAI's own transparency — purely to get a robust bbox/alpha. This
-//   accepts the real risk that OpenAI alters product pixels (confirmed
-//   repeatedly: an on-screen date changed 4 different ways across
-//   generations despite increasingly strict preservation prompts). Every
-//   result from either mode still requires manual approve/publish — this
-//   mode never bypasses that.
+// - "ai_edit" (opt-in only): OpenAI performs one comprehensive edit (studio
+//   background, cleanup, lighting, reflection reduction, composition —
+//   see productImage/productImagePrompts.ts), then the SAME local
+//   segmentation runs again on its output — never trusting OpenAI's own
+//   transparency — purely to get a robust bbox/alpha for the catalogue
+//   compositing step. This accepts the real risk that OpenAI alters product
+//   pixels (confirmed repeatedly: an on-screen date changed 4 different ways
+//   across generations despite increasingly strict preservation prompts).
+//   Every result from either mode still requires manual approve/publish —
+//   this mode never bypasses that.
 export type ProcessingMode = "catalogue_safe" | "ai_edit";
 export const DEFAULT_PROCESSING_MODE: ProcessingMode =
   process.env.IMAGE_PROCESSING_MODE === "ai_edit" ? "ai_edit" : "catalogue_safe";
@@ -171,7 +168,7 @@ export interface CreateEcommerceImageOptions {
 export async function createEcommerceImage(opts: CreateEcommerceImageOptions): Promise<IProductImage> {
   const root = await loadRoot(opts.rootImageId);
   const mode: ProcessingMode = opts.mode === "ai_edit" ? "ai_edit" : "catalogue_safe";
-  const promptVersion = mode === "ai_edit" ? IMAGE_PROMPT_VERSION : CATALOGUE_SAFE_METHOD;
+  const promptVersion = mode === "ai_edit" ? PRODUCT_IMAGE_PROMPT_VERSION : CATALOGUE_SAFE_METHOD;
 
   const hash = computeProcessingHash({
     originalImageHash: root.originalImageHash!,
@@ -239,13 +236,12 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
         throw new OrchestratorError(budgetCheck.reason, budgetLimitMessage(budgetCheck.reason));
       }
 
-      const prompt = buildLapsharkImagePrompt({ viewType: opts.viewType });
-      let edited: Awaited<ReturnType<typeof generateEcommerceEdit>> | null = null;
+      let edited: Awaited<ReturnType<typeof editProductImage>> | null = null;
       let lastError: unknown = null;
       for (let attempt = 1; attempt <= MAX_AI_EDIT_ATTEMPTS; attempt++) {
         const startedAt = Date.now();
         try {
-          edited = await generateEcommerceEdit(originalBuffer, mimeType, prompt);
+          edited = await editProductImage(originalBuffer, mimeType, opts.viewType);
           const cost = estimateCost(edited.usage);
           await recordUsage({
             productId: root.productId,
@@ -302,7 +298,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
       // Even here, alpha/bbox comes from real segmentation of OpenAI's
       // output — OpenAI's own transparency (if any) is never trusted.
       cutoutBuffer = await removeBackgroundLocal(edited.buffer);
-      processingModel = "gpt-image-2+local-segmentation";
+      processingModel = `gpt-image-2+local-segmentation (${edited.imageType})`;
     } else {
       // The whole point of the default mode: segmentation runs directly on
       // the ORIGINAL photo's own pixels, never on a generative model's
@@ -311,83 +307,22 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
       processingModel = "local-segmentation";
     }
 
-    // Reflection: detection is always local/free; the OpenAI-assisted
-    // correction only ever runs when explicitly turned "on", and never
-    // stacks a second OpenAI call on top of an ai_edit attempt (the source
-    // spec's "do not repeatedly process the image through AI").
+    // Reflection: detection only, always local/free, never a second OpenAI
+    // call. In ai_edit mode the comprehensive prompt already asks OpenAI to
+    // reduce glare as part of its one edit (see productImagePrompts.ts), so
+    // this just flags whatever's left over; in catalogue_safe there was
+    // never a correction step to begin with — a local, safe, general-purpose
+    // glare-removal algorithm isn't a solved problem, so this mode only ever
+    // detects and flags for manual review.
     let reflectionNote: string | undefined;
     const reflectionMode: ReflectionMode = opts.reflectionMode ?? "auto";
     if (reflectionMode !== "off") {
       const reflection = await analyzeReflection(cutoutBuffer);
       if (reflection.detected) {
-        const reflectionBudgetOk =
-          reflectionMode === "on" && mode === "catalogue_safe" ? (await checkBudgetAndLimits(estimateCost(null).amountUsd)).allowed : false;
-        if (reflectionBudgetOk) {
-          const startedAt = Date.now();
-          try {
-            const reflectionEdit = await generateEcommerceEdit(originalBuffer, mimeType, buildReflectionRemovalPrompt());
-            const cost = estimateCost(reflectionEdit.usage);
-            await recordUsage({
-              productId: root.productId,
-              productImageId: root._id as Types.ObjectId,
-              imageVersionId: version._id as Types.ObjectId,
-              operation,
-              aiModel: "gpt-image-2",
-              originalImageHash: root.originalImageHash!,
-              processingHash: hash,
-              promptVersion: REFLECTION_PROMPT_VERSION,
-              processingConfigVersion: PROCESSING_CONFIG_VERSION,
-              status: "success",
-              inputUsage: reflectionEdit.usage,
-              outputUsage: reflectionEdit.usage,
-              totalUsage: reflectionEdit.usage,
-              estimatedCost: cost.amountUsd,
-              estimatedCostIsApproximate: cost.approximate,
-              durationMs: Date.now() - startedAt,
-              initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
-            });
-            const correctedCutout = await removeBackgroundLocal(reflectionEdit.buffer);
-            const changePercent = await computeRegionChangePercent(cutoutBuffer, correctedCutout);
-            cutoutBuffer = correctedCutout;
-            processingModel += "+reflection-correction";
-            reflectionNote =
-              changePercent > REFLECTION_CHANGE_REVIEW_THRESHOLD
-                ? `Reflection correction changed ~${changePercent}% of the product region — please review closely`
-                : `Reflection glare reduced (~${reflection.hotspotPercent}% of frame, ${changePercent}% region change)`;
-          } catch (err) {
-            // Reflection correction failing isn't fatal to the whole
-            // attempt — keep the uncorrected (but still valid) cutout and
-            // just note that glare was seen but not addressed.
-            const classified = classifyOpenAIError(err);
-            await recordUsage({
-              productId: root.productId,
-              productImageId: root._id as Types.ObjectId,
-              imageVersionId: version._id as Types.ObjectId,
-              operation,
-              aiModel: "gpt-image-2",
-              originalImageHash: root.originalImageHash!,
-              processingHash: hash,
-              promptVersion: REFLECTION_PROMPT_VERSION,
-              processingConfigVersion: PROCESSING_CONFIG_VERSION,
-              status: classified.transient ? "error_transient" : "error_permanent",
-              inputUsage: null,
-              outputUsage: null,
-              totalUsage: null,
-              estimatedCost: null,
-              estimatedCostIsApproximate: true,
-              durationMs: Date.now() - startedAt,
-              errorMessage: classified.message.slice(0, 500),
-              initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
-            });
-            reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — automatic correction failed`;
-          }
-        } else if (reflectionMode !== "on") {
-          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — enable Reflection Removal to correct it`;
-        } else if (mode !== "catalogue_safe") {
-          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI Edit mode already used its one OpenAI call)`;
-        } else {
-          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI processing currently disabled or over budget)`;
-        }
+        reflectionNote =
+          mode === "ai_edit"
+            ? `Possible residual reflection/glare detected (~${reflection.hotspotPercent}% of frame) after AI editing — review closely`
+            : `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — AI Edit mode attempts to reduce this, Catalogue Safe only flags it`;
       }
     }
 

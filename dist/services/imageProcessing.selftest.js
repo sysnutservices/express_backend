@@ -187,14 +187,6 @@ function main() {
         const brightProductPng = yield (0, sharp_1.default)(brightProductBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
         const brightResult = yield (0, imageProcessing_1.analyzeReflection)(brightProductPng);
         assert_1.default.strictEqual(brightResult.detected, false, "a naturally bright/silver product must not be flagged as glare");
-        // 11. computeRegionChangePercent: identical images show 0% change;
-        //     substantially different images show a large change.
-        const sameA = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
-        const sameB = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
-        assert_1.default.strictEqual(yield (0, imageProcessing_1.computeRegionChangePercent)(sameA, sameB), 0, "identical images must show 0% change");
-        const different = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#ffffff" } }).png().toBuffer();
-        const bigChange = yield (0, imageProcessing_1.computeRegionChangePercent)(sameA, different);
-        assert_1.default.ok(bigChange > 90, `very different images should show a large change percentage, got ${bigChange}%`);
         console.log("imageProcessing.selftest: all assertions passed");
     });
 }

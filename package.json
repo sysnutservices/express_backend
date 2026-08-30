@@ -8,7 +8,7 @@
     "netlify:build": "tsc",
     "start": "node dist/server.js",
     "dev": "nodemon --exec ts-node src/server.ts",
-    "test": "ts-node src/services/imageProcessing.selftest.ts && ts-node src/services/localSegmentation.selftest.ts && ts-node src/services/openaiImageService.selftest.ts && ts-node src/services/imageCostControl.selftest.ts && ts-node src/services/productImageOrchestrator.selftest.ts && ts-node src/utils/envFile.selftest.ts"
+    "test": "ts-node src/services/imageProcessing.selftest.ts && ts-node src/services/localSegmentation.selftest.ts && ts-node src/services/openaiClient.selftest.ts && ts-node src/services/productImage/productImageTypes.selftest.ts && ts-node src/services/productImage/productImagePrompts.selftest.ts && ts-node src/services/imageCostControl.selftest.ts && ts-node src/services/productImageOrchestrator.selftest.ts && ts-node src/utils/envFile.selftest.ts"
   },
   "keywords": [],
   "author": "",
