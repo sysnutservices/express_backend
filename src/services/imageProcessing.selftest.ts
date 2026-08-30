@@ -14,6 +14,9 @@ import {
   composeStudioImage,
   generateVariants,
   validateMasterImage,
+  resolveViewSettings,
+  computeOccupancy,
+  flattenMasterToWhite,
   StudioSettings,
 } from "./imageProcessing";
 
@@ -48,6 +51,17 @@ async function main() {
   assert.strictEqual(merged.brightness, 1.1, "manual brightness should win over default");
   assert.strictEqual(merged.contrast, 1, "unset contrast should fall back to default");
   assert.strictEqual(merged.position, preset.position, "unset position should fall back to preset");
+
+  // 4b. resolveViewSettings: every preset now defaults shadow to true; the
+  //     ENABLE_SHADOW=false global kill switch turns it off, but only when
+  //     the caller didn't already pass an explicit shadow value of their own.
+  const prevEnableShadow = process.env.ENABLE_SHADOW;
+  delete process.env.ENABLE_SHADOW;
+  assert.strictEqual(resolveViewSettings("open_front").shadow, true, "shadow defaults on");
+  process.env.ENABLE_SHADOW = "false";
+  assert.strictEqual(resolveViewSettings("open_front").shadow, false, "ENABLE_SHADOW=false must disable shadow globally");
+  assert.strictEqual(resolveViewSettings("open_front", { shadow: true }).shadow, true, "an explicit caller override still wins over the kill switch");
+  if (prevEnableShadow === undefined) delete process.env.ENABLE_SHADOW; else process.env.ENABLE_SHADOW = prevEnableShadow;
 
   // 5. End-to-end composite + variants on a synthetic cutout: non-square
   //    source (aspect ratio must be preserved), padded with transparent
@@ -114,6 +128,30 @@ async function main() {
     .png()
     .toBuffer();
   assert.ok((await validateMasterImage(offWhiteBg))?.includes("white"), "a non-white background corner must be flagged");
+
+  // 7. computeOccupancy: the master above was composed at scale 0.86, so its
+  //    longest trimmed dimension should occupy roughly 86% of the canvas.
+  const occupancy = await computeOccupancy(master);
+  assert.ok(occupancy >= 80 && occupancy <= 90, `occupancy out of expected range: ${occupancy}%`);
+
+  // 8. flattenMasterToWhite: derives the opaque white-background version
+  //    from a transparent one via a flatten, not a re-composite — must end
+  //    up with no alpha channel and a pure-white corner.
+  const transparentTestMaster = await sharp({
+    create: { width: 200, height: 200, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([{
+      input: await sharp({ create: { width: 100, height: 100, channels: 4, background: { r: 10, g: 10, b: 10, alpha: 255 } } }).png().toBuffer(),
+      left: 50,
+      top: 50,
+    }])
+    .png()
+    .toBuffer();
+  const flattened = await flattenMasterToWhite(transparentTestMaster, "png");
+  const flattenedMeta = await sharp(flattened).metadata();
+  assert.strictEqual(flattenedMeta.hasAlpha, false, "flattened white version must have no alpha channel");
+  const flattenedCorner = await sharp(flattened).extract({ left: 1, top: 1, width: 1, height: 1 }).raw().toBuffer();
+  assert.deepStrictEqual(Array.from(flattenedCorner), [255, 255, 255], "flattened corner must be pure white");
 
   console.log("imageProcessing.selftest: all assertions passed");
 }

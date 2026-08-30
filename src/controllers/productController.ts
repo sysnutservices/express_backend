@@ -6,10 +6,8 @@ import path from 'path';
 import fs from 'fs';
 import { imagekit, uploadToImageKit, uploadUrlToImageKit, uploadBufferToImageKit } from '../services/imagekit';
 import sharp from 'sharp';
-import { resolveViewSettings, viewPresetToStudioSettings, composeStudioImage, generateVariants, ProductViewType, ViewPreset, VIEW_PRESETS, PROCESSING_CONFIG_VERSION } from '../services/imageProcessing';
+import { resolveViewSettings, viewPresetToStudioSettings, composeStudioImage, generateVariants, flattenMasterToWhite, ProductViewType, ViewPreset, VIEW_PRESETS } from '../services/imageProcessing';
 import { sanitizeSettings } from '../utils/imageSettingsValidation';
-import { buildLapsharkImagePrompt, generateEcommerceEdit, classifyOpenAIError, IMAGE_PROMPT_VERSION } from '../services/openaiImageService';
-import { checkBudgetAndLimits, estimateCost, recordUsage } from '../services/imageCostControl';
 import { removeBackgroundLocal } from '../services/localSegmentation';
 
 // Configure multer storage
@@ -377,17 +375,15 @@ export const deleteProduct = async (req: Request, res: Response) => {
 };
 
 // Runs a picked file (or an already-hosted image, for reprocessing) through
-// OpenAI GPT Image 2 + view-preset-driven Sharp compositing, then uploads
-// the result to ImageKit. Called by the admin form the instant an image is
-// picked, before the product itself is saved — the returned URL is what
-// createProduct/updateProduct receive via imageUrl/imageUrls.
+// local IS-Net segmentation + view-preset-driven Sharp compositing, then
+// uploads the result to ImageKit. Called by the admin form the instant an
+// image is picked, before the product itself is saved — the returned URL is
+// what createProduct/updateProduct receive via imageUrl/imageUrls.
 //
-// No productId/ProductImage exists yet at this point in the flow, so usage
-// is recorded with null product references (still counts toward the
-// budget/rate limits — see ImageProcessingUsage's productId comment) and
-// there's no fingerprint-reuse or version history here, only a single
-// attempt per call; the existing admin form's own "Retry" button already
-// covers manual retry on failure.
+// No productId/ProductImage exists yet at this point in the flow, so there's
+// no fingerprint-reuse or version history here, only a single attempt per
+// call; the existing admin form's own "Retry" button already covers manual
+// retry on failure. No OpenAI involved, so no cost/budget concerns either.
 export const processImage = async (req: Request, res: Response) => {
   try {
     let inputBuffer: Buffer;
@@ -417,75 +413,13 @@ export const processImage = async (req: Request, res: Response) => {
     const viewType: ProductViewType = req.body.viewType in VIEW_PRESETS ? req.body.viewType : 'custom';
     const settings = sanitizeSettings(req.body.settings);
 
-    const budgetCheck = await checkBudgetAndLimits(estimateCost(null).amountUsd);
-    if (!budgetCheck.allowed) {
-      const status = budgetCheck.reason === 'AI_DISABLED' ? 503 : budgetCheck.reason === 'MONTHLY_BUDGET' ? 402 : 429;
-      const messages: Record<string, string> = {
-        AI_DISABLED: 'AI image processing is temporarily disabled.',
-        MONTHLY_BUDGET: 'Monthly image processing budget has been reached.',
-        DAILY_LIMIT: 'Daily image processing limit reached, try again later.',
-        HOURLY_LIMIT: 'Hourly image processing limit reached, try again later.',
-      };
-      return res.status(status).json({ message: messages[budgetCheck.reason] });
-    }
-
-    const prompt = buildLapsharkImagePrompt({ viewType });
-    const initiatedBy = (req as any).user?._id ?? null;
-    const attemptStart = Date.now();
-    let edited: Awaited<ReturnType<typeof generateEcommerceEdit>>;
-    try {
-      edited = await generateEcommerceEdit(inputBuffer, mimeType, prompt);
-      const cost = estimateCost(edited.usage);
-      await recordUsage({
-        productId: null,
-        productImageId: null,
-        imageVersionId: null,
-        operation: 'create',
-        aiModel: 'gpt-image-2',
-        originalImageHash: null,
-        processingHash: null,
-        promptVersion: IMAGE_PROMPT_VERSION,
-        processingConfigVersion: PROCESSING_CONFIG_VERSION,
-        status: 'success',
-        inputUsage: edited.usage,
-        outputUsage: edited.usage,
-        totalUsage: edited.usage,
-        estimatedCost: cost.amountUsd,
-        estimatedCostIsApproximate: cost.approximate,
-        durationMs: Date.now() - attemptStart,
-        initiatedBy,
-      });
-    } catch (err) {
-      const classified = classifyOpenAIError(err);
-      await recordUsage({
-        productId: null,
-        productImageId: null,
-        imageVersionId: null,
-        operation: 'create',
-        aiModel: 'gpt-image-2',
-        originalImageHash: null,
-        processingHash: null,
-        promptVersion: IMAGE_PROMPT_VERSION,
-        processingConfigVersion: PROCESSING_CONFIG_VERSION,
-        status: classified.transient ? 'error_transient' : 'error_permanent',
-        inputUsage: null,
-        outputUsage: null,
-        totalUsage: null,
-        estimatedCost: null,
-        estimatedCostIsApproximate: true,
-        durationMs: Date.now() - attemptStart,
-        errorMessage: classified.message.slice(0, 500),
-        initiatedBy,
-      });
-      throw new Error('AI image editing failed');
-    }
-
-    // Tight, robust bounding-box crop (IS-Net) before composition — OpenAI's
-    // edit doesn't determine final geometry, Sharp does, from this bbox.
-    const cutoutBuffer = await removeBackgroundLocal(edited.buffer);
+    // Segmentation runs directly on the picked photo's own pixels — no
+    // generative model involved, no cost, nothing to budget/rate-limit.
+    const cutoutBuffer = await removeBackgroundLocal(inputBuffer);
     const merged = resolveViewSettings(viewType, settings);
     const studioSettings = viewPresetToStudioSettings(merged);
-    const masterBuffer = await composeStudioImage(cutoutBuffer, studioSettings);
+    const transparentMaster = await composeStudioImage(cutoutBuffer, { ...studioSettings, background: 'transparent', outputFormat: 'png' });
+    const masterBuffer = await flattenMasterToWhite(transparentMaster, studioSettings.outputFormat, studioSettings.quality);
     const variants = await generateVariants(masterBuffer);
 
     // No product title exists yet at this stage (image is processed before

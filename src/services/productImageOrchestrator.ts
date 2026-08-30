@@ -10,24 +10,35 @@ import {
   resolveViewSettings,
   viewPresetToStudioSettings,
   validateMasterImage,
+  computeOccupancy,
+  flattenMasterToWhite,
   PROCESSING_CONFIG_VERSION,
 } from "./imageProcessing";
-import { buildLapsharkImagePrompt, generateEcommerceEdit, classifyOpenAIError, IMAGE_PROMPT_VERSION } from "./openaiImageService";
 import { computeProcessingHash, estimateCost, checkBudgetAndLimits, recordUsage } from "./imageCostControl";
 import { removeBackgroundLocal } from "./localSegmentation";
+import { buildLapsharkImagePrompt, generateEcommerceEdit, classifyOpenAIError, IMAGE_PROMPT_VERSION } from "./openaiImageService";
 
-// OpenAI GPT Image 2 is the sole *background/presentation* editor, by
-// explicit decision — full local-segmentation-as-the-default was tried and
-// benchmarked, then reverted in favor of OpenAI, accepting that it can
-// alter product pixels (confirmed: an on-screen date changed 3 times
-// despite preservation prompts). What's NOT reverted is using
-// localSegmentation.ts's IS-Net model for what it's actually good at and
-// doesn't touch product pixels for: finding a tight, robust product
-// bounding box on OpenAI's output. OpenAI edits the background; Sharp,
-// guided by that bbox, decides 100% of the geometry (crop/scale/position) —
-// OpenAI was never a reliable judge of "how much whitespace is too much."
-
-export const MAX_ATTEMPTS = 3; // 1 initial + 2 retries, only for transient failures
+// Two processing modes, chosen explicitly per request — never inferred:
+//
+// - "catalogue_safe" (the default): local segmentation (IS-Net) runs
+//   directly on the ORIGINAL photo's own pixels — never on a generative
+//   model's regenerated output. Only the alpha channel comes from the
+//   model; every pixel inside the product silhouette is byte-identical to
+//   the source photo, so product-pixel alteration is structurally
+//   impossible, not just prompted against.
+// - "ai_edit" (opt-in only): OpenAI edits the background first, then the
+//   SAME local segmentation runs again on OpenAI's output — never trusting
+//   OpenAI's own transparency — purely to get a robust bbox/alpha. This
+//   accepts the real risk that OpenAI alters product pixels (confirmed
+//   repeatedly: an on-screen date changed 4 different ways across
+//   generations despite increasingly strict preservation prompts). Every
+//   result from either mode still requires manual approve/publish — this
+//   mode never bypasses that.
+export type ProcessingMode = "catalogue_safe" | "ai_edit";
+export const DEFAULT_PROCESSING_MODE: ProcessingMode =
+  process.env.IMAGE_PROCESSING_MODE === "ai_edit" ? "ai_edit" : "catalogue_safe";
+const CATALOGUE_SAFE_METHOD = "local-segmentation-v1";
+const MAX_AI_EDIT_ATTEMPTS = 3; // 1 initial + 2 retries, only for transient failures
 
 export type OrchestratorErrorCode =
   | "NOT_FOUND"
@@ -73,14 +84,12 @@ async function nextVersionNumber(rootId: Types.ObjectId): Promise<number> {
   return (lastVersion?.version ?? 0) + 1;
 }
 
-// Composes an already-cropped cutout into the 2000/1200/500 variants and
-// uploads them — shared so the Sharp compositing logic exists exactly once.
-// Takes a cutout, not the raw OpenAI output — the caller runs
-// removeBackgroundLocal (IS-Net bbox/crop) ONCE at generation time and
-// caches the result as aiEditedImageUrl, rather than this function
-// re-running ~1-2s of ML inference on every Sharp-only settings recompute
-// (recomposeVersion calls this same path for the live-preview debounce,
-// which needs to stay fast).
+// Composes an already-segmented cutout into the transparent master, the
+// derived white-background master, and the 2000/1200/500 variants, then
+// uploads them all — shared so the Sharp compositing logic exists exactly
+// once (createEcommerceImage calls this at generation time; recomposeVersion
+// calls it again against the same cached cutout for Sharp-only settings
+// changes, never re-running the ~1-2s ML segmentation step).
 async function composeAndUpload(
   cutoutBuffer: Buffer,
   viewType: ProductViewType,
@@ -89,17 +98,28 @@ async function composeAndUpload(
 ) {
   const merged = resolveViewSettings(viewType, settings);
   const studioSettings = viewPresetToStudioSettings(merged);
-  const masterBuffer = await composeStudioImage(cutoutBuffer, studioSettings);
+
+  // Transparent master first — the canonical artifact; the white ecommerce
+  // version is a cheap flatten of THIS buffer, never a second independent
+  // composite, so the two stay pixel-identical everywhere but the background.
+  const transparentMaster = await composeStudioImage(cutoutBuffer, {
+    ...studioSettings,
+    background: "transparent",
+    outputFormat: "png",
+  });
+  const masterBuffer = await flattenMasterToWhite(transparentMaster, studioSettings.outputFormat, studioSettings.quality);
   const qualityWarning = await validateMasterImage(masterBuffer);
+  const occupancyPercent = await computeOccupancy(masterBuffer);
   const variants = await generateVariants(masterBuffer);
 
   const nameHint = [nameHintBase, viewType.replace(/_/g, " ")].filter(Boolean).join(" ") || "laptop";
-  const [masterUpload, productUpload, thumbnailUpload] = await Promise.all([
+  const [transparentUpload, masterUpload, productUpload, thumbnailUpload] = await Promise.all([
+    uploadBufferToImageKit(transparentMaster, "/lapshark/products/transparent", `${nameHint} transparent`),
     uploadBufferToImageKit(variants.master.buffer, "/lapshark/products", nameHint),
     uploadBufferToImageKit(variants.product.buffer, "/lapshark/products/variants", `${nameHint} product`),
     uploadBufferToImageKit(variants.thumbnail.buffer, "/lapshark/products/variants", `${nameHint} thumbnail`),
   ]);
-  return { merged, masterUpload, productUpload, thumbnailUpload, qualityWarning };
+  return { merged, transparentUpload, masterUpload, productUpload, thumbnailUpload, qualityWarning, occupancyPercent };
 }
 
 export interface CreateEcommerceImageOptions {
@@ -107,6 +127,7 @@ export interface CreateEcommerceImageOptions {
   viewType: ProductViewType;
   settings?: Partial<ViewPreset>;
   initiatedBy: string | null;
+  mode?: ProcessingMode;
 }
 
 // The one entry point for both "Create Ecommerce Image" and "Reprocess" —
@@ -115,17 +136,21 @@ export interface CreateEcommerceImageOptions {
 // code paths have to remember to follow.
 export async function createEcommerceImage(opts: CreateEcommerceImageOptions): Promise<IProductImage> {
   const root = await loadRoot(opts.rootImageId);
+  const mode: ProcessingMode = opts.mode === "ai_edit" ? "ai_edit" : "catalogue_safe";
+  const promptVersion = mode === "ai_edit" ? IMAGE_PROMPT_VERSION : CATALOGUE_SAFE_METHOD;
 
   const hash = computeProcessingHash({
     originalImageHash: root.originalImageHash!,
     viewType: opts.viewType,
-    promptVersion: IMAGE_PROMPT_VERSION,
+    promptVersion,
     processingConfigVersion: PROCESSING_CONFIG_VERSION,
   });
 
-  // Fingerprint reuse: identical original+viewType+prompt+config was already
+  // Fingerprint reuse: identical original+viewType+mode+config was already
   // generated successfully — re-run only the Sharp step against the cached
-  // AI output. Zero OpenAI calls.
+  // cutout. Zero segmentation/OpenAI re-runs. Keyed on mode (via
+  // promptVersion) so a catalogue_safe result is never mistaken for an
+  // ai_edit one for the same viewType, or vice versa.
   const reusable = await ProductImage.findOne({
     rootImageId: root._id,
     processingHash: hash,
@@ -141,7 +166,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
   // Idempotency / duplicate-click guard: the partial unique index on
   // {rootImageId, processingHash, status:"PROCESSING"} makes a second rapid
   // click for the same fingerprint hit E11000 instead of starting a second
-  // OpenAI call — no queue system needed to dedupe in-flight work.
+  // segmentation/OpenAI run — no queue system needed to dedupe in-flight work.
   let version: IProductImage;
   try {
     version = await ProductImage.create({
@@ -153,7 +178,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
       originalImageUrl: root.originalImageUrl,
       originalImageHash: root.originalImageHash,
       processingHash: hash,
-      promptVersion: IMAGE_PROMPT_VERSION,
+      promptVersion,
       processingConfigVersion: PROCESSING_CONFIG_VERSION,
     });
   } catch (err: any) {
@@ -165,88 +190,97 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
   }
 
   try {
-    const budgetCheck = await checkBudgetAndLimits(estimateCost(null).amountUsd);
-    if (!budgetCheck.allowed) {
-      await ProductImage.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: budgetCheck.reason });
-      throw new OrchestratorError(budgetCheck.reason, budgetLimitMessage(budgetCheck.reason));
-    }
-
     const { buffer: originalBuffer, mimeType } = await fetchImageBytes(root.originalImageUrl!);
-    const prompt = buildLapsharkImagePrompt({ viewType: opts.viewType });
 
-    let edited: Awaited<ReturnType<typeof generateEcommerceEdit>> | null = null;
-    let lastError: unknown = null;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      const startedAt = Date.now();
-      try {
-        edited = await generateEcommerceEdit(originalBuffer, mimeType, prompt);
-        const cost = estimateCost(edited.usage);
-        await recordUsage({
-          productId: root.productId,
-          productImageId: root._id as Types.ObjectId,
-          imageVersionId: version._id as Types.ObjectId,
-          operation,
-          aiModel: "gpt-image-2",
-          originalImageHash: root.originalImageHash!,
-          processingHash: hash,
-          promptVersion: IMAGE_PROMPT_VERSION,
-          processingConfigVersion: PROCESSING_CONFIG_VERSION,
-          status: "success",
-          inputUsage: edited.usage,
-          outputUsage: edited.usage,
-          totalUsage: edited.usage,
-          estimatedCost: cost.amountUsd,
-          estimatedCostIsApproximate: cost.approximate,
-          durationMs: Date.now() - startedAt,
-          initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
-        });
-        break;
-      } catch (err) {
-        lastError = err;
-        const classified = classifyOpenAIError(err);
-        await recordUsage({
-          productId: root.productId,
-          productImageId: root._id as Types.ObjectId,
-          imageVersionId: version._id as Types.ObjectId,
-          operation,
-          aiModel: "gpt-image-2",
-          originalImageHash: root.originalImageHash!,
-          processingHash: hash,
-          promptVersion: IMAGE_PROMPT_VERSION,
-          processingConfigVersion: PROCESSING_CONFIG_VERSION,
-          status: classified.transient ? "error_transient" : "error_permanent",
-          inputUsage: null,
-          outputUsage: null,
-          totalUsage: null,
-          estimatedCost: null,
-          estimatedCostIsApproximate: true,
-          durationMs: Date.now() - startedAt,
-          errorMessage: classified.message.slice(0, 500),
-          initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
-        });
-        if (!classified.transient || attempt >= MAX_ATTEMPTS) break;
+    let cutoutBuffer: Buffer;
+    let processingModel: string;
+
+    if (mode === "ai_edit") {
+      // Explicit, admin-selected opt-in only (never the silent default) —
+      // accepts the risk that OpenAI alters product pixels. Costs money, so
+      // this is the only branch that budget-checks/records OpenAI usage.
+      const budgetCheck = await checkBudgetAndLimits(estimateCost(null).amountUsd);
+      if (!budgetCheck.allowed) {
+        await ProductImage.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: budgetCheck.reason });
+        throw new OrchestratorError(budgetCheck.reason, budgetLimitMessage(budgetCheck.reason));
       }
+
+      const prompt = buildLapsharkImagePrompt({ viewType: opts.viewType });
+      let edited: Awaited<ReturnType<typeof generateEcommerceEdit>> | null = null;
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= MAX_AI_EDIT_ATTEMPTS; attempt++) {
+        const startedAt = Date.now();
+        try {
+          edited = await generateEcommerceEdit(originalBuffer, mimeType, prompt);
+          const cost = estimateCost(edited.usage);
+          await recordUsage({
+            productId: root.productId,
+            productImageId: root._id as Types.ObjectId,
+            imageVersionId: version._id as Types.ObjectId,
+            operation,
+            aiModel: "gpt-image-2",
+            originalImageHash: root.originalImageHash!,
+            processingHash: hash,
+            promptVersion,
+            processingConfigVersion: PROCESSING_CONFIG_VERSION,
+            status: "success",
+            inputUsage: edited.usage,
+            outputUsage: edited.usage,
+            totalUsage: edited.usage,
+            estimatedCost: cost.amountUsd,
+            estimatedCostIsApproximate: cost.approximate,
+            durationMs: Date.now() - startedAt,
+            initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
+          });
+          break;
+        } catch (err) {
+          lastError = err;
+          const classified = classifyOpenAIError(err);
+          await recordUsage({
+            productId: root.productId,
+            productImageId: root._id as Types.ObjectId,
+            imageVersionId: version._id as Types.ObjectId,
+            operation,
+            aiModel: "gpt-image-2",
+            originalImageHash: root.originalImageHash!,
+            processingHash: hash,
+            promptVersion,
+            processingConfigVersion: PROCESSING_CONFIG_VERSION,
+            status: classified.transient ? "error_transient" : "error_permanent",
+            inputUsage: null,
+            outputUsage: null,
+            totalUsage: null,
+            estimatedCost: null,
+            estimatedCostIsApproximate: true,
+            durationMs: Date.now() - startedAt,
+            errorMessage: classified.message.slice(0, 500),
+            initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
+          });
+          if (!classified.transient || attempt >= MAX_AI_EDIT_ATTEMPTS) break;
+        }
+      }
+
+      if (!edited) {
+        await ProductImage.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: "AI image editing failed" });
+        throw new OrchestratorError("OPENAI_FAILED", lastError instanceof Error ? lastError.message : "AI image editing failed");
+      }
+
+      // Even here, alpha/bbox comes from real segmentation of OpenAI's
+      // output — OpenAI's own transparency (if any) is never trusted.
+      cutoutBuffer = await removeBackgroundLocal(edited.buffer);
+      processingModel = "gpt-image-2+local-segmentation";
+    } else {
+      // The whole point of the default mode: segmentation runs directly on
+      // the ORIGINAL photo's own pixels, never on a generative model's
+      // regenerated output.
+      cutoutBuffer = await removeBackgroundLocal(originalBuffer);
+      processingModel = "local-segmentation";
     }
 
-    if (!edited) {
-      await ProductImage.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: "AI image editing failed" });
-      throw new OrchestratorError("OPENAI_FAILED", lastError instanceof Error ? lastError.message : "AI image editing failed");
-    }
-
-    // Crop to the product's real bounding box ONCE here (IS-Net, same model
-    // as the deterministic pipeline, used only for a robust bbox — it never
-    // replaces or blends product pixels here, composeStudioImage still
-    // flattens onto white below). Cached as aiEditedImageUrl so later
-    // Sharp-only settings changes (recomposeVersion) don't re-run inference.
-    const cutoutBuffer = await removeBackgroundLocal(edited.buffer);
-    const aiUpload = await uploadBufferToImageKit(cutoutBuffer, "/lapshark/products/ai-edited", `${opts.viewType} ai-edit`);
+    const cutoutUpload = await uploadBufferToImageKit(cutoutBuffer, "/lapshark/products/cutouts", `${opts.viewType} cutout`);
     const product = await Product.findById(root.productId).select("title").lean();
-    const { merged, masterUpload, productUpload, thumbnailUpload, qualityWarning } = await composeAndUpload(
-      cutoutBuffer,
-      opts.viewType,
-      opts.settings,
-      product?.title
-    );
+    const { merged, transparentUpload, masterUpload, productUpload, thumbnailUpload, qualityWarning, occupancyPercent } =
+      await composeAndUpload(cutoutBuffer, opts.viewType, opts.settings, product?.title);
 
     await ProductImage.updateMany(
       { rootImageId: root._id, _id: { $ne: version._id }, isActive: true },
@@ -255,11 +289,13 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
 
     version.status = "READY_FOR_REVIEW";
     version.qualityWarning = qualityWarning ?? undefined;
-    version.aiEditedImageUrl = aiUpload.url;
+    version.occupancyPercent = occupancyPercent;
+    version.cutoutImageUrl = cutoutUpload.url;
+    version.transparentMasterUrl = transparentUpload.url;
     version.masterImageUrl = masterUpload.url;
     version.productImageUrl = productUpload.url;
     version.thumbnailImageUrl = thumbnailUpload.url;
-    version.processingModel = "gpt-image-2";
+    version.processingModel = processingModel;
     version.processingSettings = merged as unknown as Record<string, unknown>;
     version.isActive = true;
     await version.save();
@@ -289,36 +325,28 @@ export function budgetLimitMessage(reason: OrchestratorErrorCode): string {
   }
 }
 
-// Sharp-only recompute against the cached AI output — no OpenAI call, no new
-// version number. Used both for fingerprint reuse and for the settings
-// panel's live preview.
+// Sharp-only recompute against the cached cutout — no segmentation re-run,
+// no new version number. Used both for fingerprint reuse and for the
+// settings panel's live preview.
 export async function recomposeVersion(versionId: string, settings?: Partial<ViewPreset>): Promise<IProductImage> {
   const version = await ProductImage.findById(versionId);
   if (!version) throw new OrchestratorError("NOT_FOUND", "Image version not found");
   if (version.rootImageId === null) throw new OrchestratorError("NOT_A_ROOT", "Cannot recompose an original image slot");
-  if (!version.aiEditedImageUrl) {
-    throw new OrchestratorError("NOT_RECOMPOSABLE", "This version has no AI output to recompose from yet");
+  if (!version.cutoutImageUrl) {
+    throw new OrchestratorError("NOT_RECOMPOSABLE", "This version has no cutout to recompose from yet");
   }
 
-  const { buffer: editedBuffer } = await fetchImageBytes(version.aiEditedImageUrl);
-  const merged = resolveViewSettings(version.viewType, settings);
-  const studioSettings = viewPresetToStudioSettings(merged);
-  const masterBuffer = await composeStudioImage(editedBuffer, studioSettings);
-  const qualityWarning = await validateMasterImage(masterBuffer);
-  const variants = await generateVariants(masterBuffer);
+  const { buffer: cutoutBuffer } = await fetchImageBytes(version.cutoutImageUrl);
+  const { merged, transparentUpload, masterUpload, productUpload, thumbnailUpload, qualityWarning, occupancyPercent } =
+    await composeAndUpload(cutoutBuffer, version.viewType, settings, undefined);
 
-  const nameHint = version.viewType.replace(/_/g, " ");
-  const [masterUpload, productUpload, thumbnailUpload] = await Promise.all([
-    uploadBufferToImageKit(variants.master.buffer, "/lapshark/products", nameHint),
-    uploadBufferToImageKit(variants.product.buffer, "/lapshark/products/variants", `${nameHint} product`),
-    uploadBufferToImageKit(variants.thumbnail.buffer, "/lapshark/products/variants", `${nameHint} thumbnail`),
-  ]);
-
+  version.transparentMasterUrl = transparentUpload.url;
   version.masterImageUrl = masterUpload.url;
   version.productImageUrl = productUpload.url;
   version.thumbnailImageUrl = thumbnailUpload.url;
   version.processingSettings = merged as unknown as Record<string, unknown>;
   version.qualityWarning = qualityWarning ?? undefined;
+  version.occupancyPercent = occupancyPercent;
   if (version.status === "PROCESSING_FAILED") version.status = "READY_FOR_REVIEW";
   await version.save();
   return version;
