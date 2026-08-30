@@ -5,17 +5,35 @@ import { ProductImageType } from "./productImageTypes";
 // whenever MASTER_PROMPT or any per-type addition changes, so the
 // processing fingerprint invalidates old, differently-generated results
 // instead of silently reusing them.
-export const PRODUCT_IMAGE_PROMPT_VERSION = "v1.0";
+//
+// v1.1: removed every instruction that gave OpenAI any composition/geometry
+// responsibility ("correct perspective and alignment", "center the product
+// in the frame") after a live failure — a landscape/portrait source photo
+// came back as a vertically-rotated device with the keyboard and trackpad
+// gone. Composition/orientation/proportions are Sharp's job everywhere else
+// in this pipeline (composeStudioImage) and now explicitly stay Sharp's job
+// here too; productImageEditor.ts also hard-rejects (and retries) any
+// result whose orientation doesn't match the source, as a backstop.
+export const PRODUCT_IMAGE_PROMPT_VERSION = "v1.1";
 
 // Verbatim foundation prompt — shared preservation rules every image type
 // builds on. Do not edit ad hoc per type; add a short, narrow addition below
 // instead, so every variant keeps the same non-negotiable guarantees.
-export const MASTER_PROMPT = `You are editing a real product photograph for a professional e-commerce catalog.
+export const MASTER_PROMPT = `EDIT THE SUPPLIED PHOTOGRAPH. DO NOT RECREATE THE PRODUCT.
 
-EDIT THE SUPPLIED PRODUCT PHOTOGRAPH.
-Do not generate a replacement product.
+You are editing a real product photograph for a professional e-commerce catalog. Do not generate a replacement product.
 
-Preserve the exact physical identity of the laptop shown in the source image.
+Preserve the exact physical identity, orientation, viewpoint, proportions and visible hardware of the laptop shown in the source image.
+
+Do not rotate the laptop.
+Do not change the opening angle.
+Do not remove the keyboard.
+Do not remove the trackpad.
+Do not replace the laptop with another laptop.
+Do not reinterpret the product.
+Do not generate missing hardware.
+
+If the source laptop is open, the output must be open. If the source laptop is closed, the output must stay closed. If the source is photographed horizontally, the output must remain horizontal — never turn it into a vertical/portrait object, and never reinterpret it as a tablet, monitor, screen, or generic electronic device.
 
 Preserve:
 - exact laptop model appearance
@@ -59,16 +77,12 @@ Use soft professional studio lighting.
 
 Keep realistic product materials.
 
-Correct minor perspective and alignment issues without changing the physical proportions of the laptop.
-
-Center the product in the frame.
-
-Keep the entire product visible.
-
 Add only a subtle realistic contact shadow beneath the product.
 
 The final image must look like a professionally photographed real laptop, not a CGI render.
 
+Do not crop the laptop.
+Do not stretch the laptop.
 Do not add text.
 Do not add marketing graphics.
 Do not add badges.
@@ -76,8 +90,10 @@ Do not add prices.
 Do not add decorative elements.
 Do not add accessories.
 
+Composition, framing and final canvas size are handled separately after your edit — do not resize, recompose, crop, rotate, or reposition the product to fit any particular canvas shape. Edit the photograph in its own original orientation and proportions.
+
 Most important:
-the output must remain the SAME physical laptop shown in the input image.`;
+the output must remain the SAME physical laptop shown in the input image, in the same orientation and configuration.`;
 
 // Short, narrow additions only — never restating or contradicting the
 // master prompt, never inviting beautification beyond what it already asks

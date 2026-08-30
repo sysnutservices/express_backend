@@ -210,7 +210,13 @@ function createEcommerceImage(opts) {
                     }
                     catch (err) {
                         lastError = err;
+                        // A geometry mismatch (product got rotated/reoriented) is model
+                        // unpredictability on this one attempt, not invalid input or a
+                        // content-policy rejection — worth a retry, same budget as a
+                        // transient HTTP error.
+                        const isGeometryMismatch = err instanceof productImageEditor_1.GeometryMismatchError;
                         const classified = (0, openaiClient_1.classifyOpenAIError)(err);
+                        const transient = isGeometryMismatch || classified.transient;
                         yield (0, imageCostControl_1.recordUsage)({
                             productId: root.productId,
                             productImageId: root._id,
@@ -221,17 +227,17 @@ function createEcommerceImage(opts) {
                             processingHash: hash,
                             promptVersion,
                             processingConfigVersion: imageProcessing_1.PROCESSING_CONFIG_VERSION,
-                            status: classified.transient ? "error_transient" : "error_permanent",
+                            status: transient ? "error_transient" : "error_permanent",
                             inputUsage: null,
                             outputUsage: null,
                             totalUsage: null,
                             estimatedCost: null,
                             estimatedCostIsApproximate: true,
                             durationMs: Date.now() - startedAt,
-                            errorMessage: classified.message.slice(0, 500),
+                            errorMessage: (isGeometryMismatch ? err.message : classified.message).slice(0, 500),
                             initiatedBy: opts.initiatedBy ? new mongoose_1.Types.ObjectId(opts.initiatedBy) : null,
                         });
-                        if (!classified.transient || attempt >= MAX_AI_EDIT_ATTEMPTS)
+                        if (!transient || attempt >= MAX_AI_EDIT_ATTEMPTS)
                             break;
                     }
                 }

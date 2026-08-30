@@ -29,9 +29,19 @@ function main() {
     }
     assert_1.default.strictEqual(new Set(built).size, built.length, "every image type must produce a distinct prompt");
     // 2. The master prompt's own non-negotiable guarantees are present.
-    assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.includes("EDIT THE SUPPLIED PRODUCT PHOTOGRAPH"));
+    assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.startsWith("EDIT THE SUPPLIED PHOTOGRAPH. DO NOT RECREATE THE PRODUCT."));
     assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.includes("Do not generate a replacement product"));
     assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("same physical laptop"));
+    // 2b. Geometry/orientation preservation — the exact failure mode a live
+    //     test caught (a source photo came back with the laptop rotated
+    //     vertical, keyboard and trackpad gone) — and the prompt must NOT
+    //     hand OpenAI any composition/framing responsibility, since Sharp
+    //     already owns that reliably everywhere else in this pipeline.
+    assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("do not rotate the laptop"));
+    assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("do not remove the keyboard"));
+    assert_1.default.ok(productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("do not remove the trackpad"));
+    assert_1.default.ok(!productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("center the product"), "must not ask OpenAI to center/compose — that's Sharp's job");
+    assert_1.default.ok(!productImagePrompts_1.MASTER_PROMPT.toLowerCase().includes("correct minor perspective"), "must not ask OpenAI to correct perspective/alignment — that's Sharp's job");
     // 3. Screen-state prompts actually say something different about the
     //    screen, and don't cross-contradict each other.
     const onPrompt = (0, productImagePrompts_1.buildProductImagePrompt)("OPEN_LAPTOP_SCREEN_ON").toLowerCase();
