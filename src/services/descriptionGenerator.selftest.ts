@@ -77,7 +77,7 @@ function main() {
     "The Dell Latitude 5420 is a dependable business laptop. It handles office work, video calls and " +
     "everyday tasks without any fuss. This unit is refurbished.";
   assert.deepStrictEqual(
-    findViolations(cleanDraft, latitudeInput).filter((v) => !/too short|too long/i.test(v)),
+    findViolations(cleanDraft, latitudeInput).filter((v) => !/too short|too long|missing the required/i.test(v)),
     []
   );
 
@@ -87,14 +87,14 @@ function main() {
   const warrantyInput = { title: "HP ProBook", brand: "HP", specs: { warranty: "1 Year Warranty" } };
   const draftWithRealWarranty = "This HP ProBook comes with a 1 year warranty for peace of mind.";
   assert.deepStrictEqual(
-    findViolations(draftWithRealWarranty, warrantyInput).filter((v) => !/too short|too long/i.test(v)),
+    findViolations(draftWithRealWarranty, warrantyInput).filter((v) => !/too short|too long|missing the required/i.test(v)),
     []
   );
 
   const testedInput = { title: "Acer Aspire 5", brand: "Acer", condition: "Refurbished and tested" };
   const draftWithRealTestingClaim = "This Acer Aspire 5 has been tested and works reliably.";
   assert.deepStrictEqual(
-    findViolations(draftWithRealTestingClaim, testedInput).filter((v) => !/too short|too long/i.test(v)),
+    findViolations(draftWithRealTestingClaim, testedInput).filter((v) => !/too short|too long|missing the required/i.test(v)),
     []
   );
 
@@ -121,9 +121,11 @@ function main() {
     "must catch bare \"verify\"/\"inspections\", not just \"verified\""
   );
 
-  // 7. Word count — confirmed live that gpt-4o undershoots the prompt's own
-  //    400-650 word target badly (three real runs: 183/222/247 words) unless
-  //    this is actually checked, not just stated in the system prompt.
+  // 7. Word count — target dropped from 400-650 to 250-400 (2026-08-30
+  //    rewrite: the old length made every listing read like a generic
+  //    article). Checked with slack, same reasoning as before: gpt-4o
+  //    doesn't reliably hit a target word count without this being enforced,
+  //    not just stated in the prompt.
   const shortDraft = "This is a short laptop description that is nowhere near the required word count target.";
   const shortViolations = findViolations(shortDraft, genericInput);
   assert.ok(shortViolations.some((v) => /too short/i.test(v)), "a short draft must be flagged");
@@ -132,9 +134,58 @@ function main() {
   const longViolations = findViolations(longDraft, genericInput);
   assert.ok(longViolations.some((v) => /too long/i.test(v)), "an overly long draft must be flagged");
 
-  const rightLengthDraft = Array(500).fill("word").join(" ");
+  const rightLengthDraft = Array(300).fill("word").join(" ");
   const rightLengthViolations = findViolations(rightLengthDraft, genericInput);
-  assert.ok(!rightLengthViolations.some((v) => /too short|too long/i.test(v)), "a draft within 350-720 words must not be flagged for length");
+  assert.ok(!rightLengthViolations.some((v) => /too short|too long/i.test(v)), "a draft within 150-430 words must not be flagged for length");
+
+  // 8. Structure — the store owner's exact target format: "### Title –
+  //    specs" heading, then prose, then a "### Key Specifications" bullet
+  //    section. A draft missing either piece must be flagged; the store
+  //    owner's own example (adapted: dropped one sentence that itself broke
+  //    the "don't infer from the product series" rule) must pass clean.
+  const structuredInput = {
+    title: "Dell Latitude 5410",
+    brand: "Dell",
+    condition: "Refurbished",
+    specs: {
+      processor: "Intel Core i5 10th Generation",
+      ram: "8GB",
+      storage: "256GB",
+      display: "14-inch Full HD",
+      os: "Windows 10",
+    },
+  };
+  const wellFormedExample = `### Dell Latitude 5410 Refurbished Laptop – Intel Core i5 10th Gen, 8GB RAM, 256GB SSD, 14" Full HD
+
+The Dell Latitude 5410 is a practical business laptop built for everyday work and productivity. With an Intel Core i5 10th Gen processor, 8GB RAM and 256GB storage, it is well suited for office applications, web browsing, email, online classes, accounting software and general day-to-day use.
+
+Its 14-inch Full HD display gives you a good balance between working space and portability. The size is comfortable for documents, spreadsheets, browsing and video calls without making the laptop unnecessarily bulky.
+
+The 8GB RAM is suitable for regular multitasking, while the 256GB storage provides enough space for your essential files, applications and documents.
+
+### Key Specifications
+
+* **Processor:** Intel Core i5 10th Generation
+* **RAM:** 8GB
+* **Storage:** 256GB
+* **Display:** 14-inch Full HD
+* **Operating System:** Windows 10
+* **Condition:** Refurbished
+
+This refurbished Dell Latitude 5410 is a good option for anyone looking for a capable business laptop at a lower price than buying a new device. It works well for everyday productivity, study and professional use.`;
+  assert.deepStrictEqual(findViolations(wellFormedExample, structuredInput), [], "the store owner's target format must pass with zero violations");
+
+  const missingHeading = wellFormedExample.replace(/^###[^\n]*\n\n/, "");
+  assert.ok(
+    findViolations(missingHeading, structuredInput).some((v) => /missing the required "### Title"/i.test(v)),
+    "a draft missing the opening ### heading must be flagged"
+  );
+
+  const missingKeySpecs = wellFormedExample.replace(/### Key Specifications[\s\S]*?\n\n/, "");
+  assert.ok(
+    findViolations(missingKeySpecs, structuredInput).some((v) => /missing the required "Key Specifications"/i.test(v)),
+    "a draft missing the Key Specifications section must be flagged when specs were supplied"
+  );
 
   console.log("descriptionGenerator.selftest: all assertions passed");
 }

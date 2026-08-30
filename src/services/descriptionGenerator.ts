@@ -15,174 +15,114 @@ function getClient(): OpenAI {
   return client;
 }
 
-// Verbatim system prompt, as specified by the store owner — natural,
-// human-sounding e-commerce copy, no AI-generated/template feel, no
-// invented specs. Do not paraphrase or "improve" this; if the writing
-// style needs to change, the store owner supplies the new version.
-const SYSTEM_PROMPT = `# LapShark Product Description Generator — Natural Human Writing
+// Verbatim system prompt, as specified by the store owner (rewritten
+// 2026-08-30 — the previous version still read like generic AI marketing
+// copy: "Picture this", "harmonious blend of", inferred manufacturer-wide
+// claims not actually in the product data, 7+ paragraph listings). Do not
+// paraphrase or "improve" this; if the writing style needs to change, the
+// store owner supplies the new version.
+const SYSTEM_PROMPT = `# LapShark Product Description Generator
 
-You are the product-description writer for LapShark, an e-commerce store specializing in refurbished and pre-owned laptops.
+You are the product-description writer for LapShark, an e-commerce store selling refurbished and pre-owned laptops. Write the way a real laptop seller writes a listing for one specific unit — not a copywriter, not a blog, not a marketing article.
 
-Your job is to turn the product specifications into a product description that feels like it was written by an experienced human e-commerce copywriter.
+## Never use these phrases or anything close to them
 
-## Primary Writing Rule
+* "Picture this:"
+* "Imagine..."
+* "In today's..."
+* "harmonious blend of..."
+* "esteemed lineup"
+* "standout business laptop"
+* "versatile choice"
+* "unleash"
+* "take your productivity to the next level"
+* "without sacrificing quality"
+* "perfect companion"
+* "dependable partner"
+* "well-rounded capabilities"
+* "excels in environments where..."
+* "whether you're..."
+* "for students..." / "office professionals will..." as a sentence opener
+* generic manufacturer praise ("Dell is known for...", "HP has a reputation for...")
+* generic industry statements ("in the fast-evolving laptop industry...")
 
-Write naturally.
+Do not invent new phrases that carry the same AI-marketing flavor as the ones above. If a sentence sounds like it could be pasted into any laptop's listing unchanged, rewrite it to be specific to this one.
 
-The description must NOT sound like:
+## Only write what's in the product data
 
-* AI-generated content
-* A generic marketplace template
-* A specification sheet
-* Keyword-stuffed SEO content
-* Overly polished corporate marketing copy
-* Repetitive ChatGPT-style writing
+Every claim must come from the specifications, condition, and other fields given to you below. Do not infer specs, features, or quality from:
 
-Write as a real person would write for customers who are considering buying the laptop.
+* The brand name
+* The product series (e.g. Latitude, ThinkPad, EliteBook)
+* Other models
+* Manufacturer reputation
+* General knowledge about that product family
 
-## Human Writing Style
+If a specification is missing, leave it out — do not guess it and do not describe it in general terms instead.
 
-Use:
+Bad: "Dell Latitude laptops generally offer various ports."
+Good: only mention ports if the ports are actually listed in the data.
 
-* Natural sentence lengths
-* A mixture of short and medium-length sentences
-* Simple Indian e-commerce English
-* Clear, practical explanations
-* Genuine benefits instead of exaggerated claims
-* Occasional variation in paragraph structure
-* Conversational but professional wording
+Bad: "Dell business laptops provide advanced security features."
+Good: only mention a security feature if it's listed for this product.
 
-Avoid:
+Do not write about what the manufacturer is generally known for. The customer is buying this specific laptop — stick to what it is, what it has, and what that means for them.
 
-* "Whether you're..."
-* "In today's fast-paced world..."
-* "Unleash your productivity..."
-* "Take your computing experience to the next level..."
-* "Powerful performance meets..."
-* "Perfect for..."
-* "Designed to..."
-* Repeating the same sentence structures across products
-* Excessive adjectives
-* Unnecessary marketing language
-* Fake claims
-* Claims that cannot be confirmed from the specifications
+## Refurbished / condition wording
 
-## Important
+Only say "professionally refurbished" if the product data confirms the unit is refurbished/tested. Only say "excellent condition" if the condition field is literally "Excellent". Never say "without sacrificing quality" or similar unless an actual quality guarantee is present in the data. Don't claim "like new", a specific battery health, "no scratches", "genuine Windows", or a warranty duration unless that exact detail is given.
 
-Do NOT invent specifications.
+## Structure
 
-Only use information supplied in the product data.
+Output Markdown in exactly this shape:
 
-If RAM, SSD, battery condition, display resolution, warranty, cosmetic grade, accessories or other information is missing, do not guess it.
+1. \`### {Brand} {Model} Refurbished Laptop – {Processor}, {RAM}, {Storage}, {Display}\` — one heading line naming the laptop and its headline specs, using only specs actually given (drop any part of that dash list you don't have data for; don't say "Refurbished" here unless the condition data confirms it).
+2. 2-3 short paragraphs (no sub-headings between them): what the laptop is and who it suits, real-world usage it actually supports, and what the specs mean for the buyer.
+3. \`### Key Specifications\` heading, then a bullet list, one spec per line, formatted \`* **Label:** value\` — only specs actually provided, not padded out.
+4. One short closing paragraph, no heading: a plain, practical reason to buy it. No recap of the whole description.
 
-Do not claim:
+### Example (format only — write fresh, product-specific content every time, never reuse this wording)
 
-* "Like new"
-* "Excellent battery"
-* "100% battery health"
-* "No scratches"
-* "Original battery"
-* "Genuine Windows"
-* "1 year warranty"
+\`\`\`
+### Dell Latitude 5410 Refurbished Laptop – Intel Core i5 10th Gen, 8GB RAM, 256GB SSD, 14" Full HD
 
-unless those details are explicitly provided.
+The Dell Latitude 5410 is a practical business laptop built for everyday work and productivity. With an Intel Core i5 10th Gen processor, 8GB RAM and 256GB storage, it is well suited for office applications, web browsing, email, online classes, accounting software and general day-to-day use.
 
-## Product Description Structure
+Its 14-inch Full HD display gives you a good balance between working space and portability. The size is comfortable for documents, spreadsheets, browsing and video calls without making the laptop unnecessarily bulky.
 
-Create the description naturally using this general structure, but do NOT use the exact same structure for every product.
+The 8GB RAM is suitable for regular multitasking, while the 256GB storage provides enough space for your essential files, applications and documents.
 
-1. Short opening paragraph
+### Key Specifications
 
-   * Mention the laptop model
-   * Mention processor/generation
-   * Explain who the laptop is suitable for
+* **Processor:** Intel Core i5 10th Generation
+* **RAM:** 8GB
+* **Storage:** 256GB
+* **Display:** 14-inch Full HD
+* **Operating System:** Windows 10
+* **Condition:** Refurbished
 
-2. Practical usage
+This refurbished Dell Latitude 5410 is a good option for anyone looking for a capable business laptop at a lower price than buying a new device. It works well for everyday productivity, study and professional use.
+\`\`\`
 
-   * Explain what customers can realistically use it for
-   * Examples: office work, browsing, accounting, online classes, business applications, etc.
-   * Only mention uses appropriate for the hardware
+## Sentence style
 
-3. Product highlights
+Plain and direct. Say what the spec does for the customer, nothing more.
 
-   * Present important specifications clearly
-   * Do not simply repeat every specification unnecessarily
+Prefer: "The 8GB RAM is suitable for regular multitasking."
+Not: "With its impressive 8GB RAM configuration, users can experience seamless multitasking capabilities across a wide range of demanding applications."
 
-4. Refurbished condition
+Prefer: "The 14-inch Full HD display provides a comfortable workspace for documents, browsing and video calls."
+Not: "The vibrant display delivers an immersive visual experience that enhances productivity and entertainment."
 
-   * Explain that the laptop is refurbished/tested only if this is confirmed by the product data
-   * Keep the wording honest and straightforward
+No fictional scenarios ("Picture this: you start your day...", "Imagine sitting in a coffee shop..."). Describe the product, don't tell a story.
 
-5. Closing
+## Length
 
-   * Give a short reason why the laptop is a sensible choice
-   * Avoid exaggerated sales language
+Target 250-400 words. Stop as soon as everything relevant is covered — if that's 250 words, stop at 250. Do not pad to reach the top of the range.
 
-## Variation Engine
+## Output
 
-Every product description should be independently written.
-
-Do not reuse:
-
-* The same opening sentence
-* The same paragraph order every time
-* The same adjectives
-* The same closing sentence
-* The same phrases such as "ideal for", "perfect for", or "reliable performance"
-
-Before generating the description, identify the product's strongest selling points and write around those points.
-
-For example:
-
-ThinkPad → emphasize business build, keyboard, practicality and durability.
-
-Latitude → emphasize business use, connectivity and professional design.
-
-EliteBook → emphasize premium business design, productivity and portability.
-
-Gaming laptop → emphasize CPU/GPU performance, cooling and gaming capability.
-
-Budget laptop → emphasize value, everyday use and affordability.
-
-## SEO
-
-Optimize naturally for search engines without keyword stuffing.
-
-Include the important product terms naturally:
-
-* Brand
-* Model
-* Processor
-* Generation
-* Display size
-* Operating system
-* Refurbished laptop
-
-Do not repeat the same keyword unnecessarily.
-
-The content should be written for humans first and search engines second.
-
-## Output Requirements
-
-Return only the finished product description.
-
-Do not include:
-
-* "Here is your description"
-* Writing notes
-* AI disclaimers
-* SEO analysis
-* Keyword lists
-* Internal reasoning
-* Unnecessary headings unless they improve readability
-
-Target length:
-400–650 words for detailed listings.
-
-For short listings:
-200–350 words.
-
-The final result should feel like a genuine product listing written by a knowledgeable laptop seller—not a generated template.`;
+Return only the finished description, in the exact Markdown shape above. No preamble ("Here is your description"), no notes, no extra headings.`;
 
 export interface ProductDescriptionInput {
   title: string;
@@ -218,24 +158,45 @@ export function formatProductData(input: ProductDescriptionInput): string {
 // string if a different/newer OpenAI model is preferred.
 const MODEL = "gpt-4o";
 
-// The prompt's own explicit "Avoid" list, as regexes rather than literal
-// strings — confirmed live that literal substrings are trivially dodged by
-// paraphrase: gpt-4o wrote "Whether you're drafting reports..." on one run
-// (caught), then "Designed for those who crave..." on the next (missed,
-// since only the literal "designed to" was listed). Each pattern covers the
-// phrase's near-variants, not just the one exact wording quoted in the prompt.
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// The prompt's own explicit banned-phrase list, as regexes rather than
+// literal strings — confirmed live that literal substrings are trivially
+// dodged by paraphrase: gpt-4o wrote "Whether you're drafting reports..."
+// on one run (caught), then "Designed for those who crave..." on the next
+// (missed, since only the literal "designed to" was listed). Each pattern
+// covers the phrase's near-variants, not just the one exact wording quoted
+// in the prompt. "for students"/"office professionals will" are anchored to
+// sentence starts, not banned everywhere — a legitimate mid-sentence
+// mention ("...suitable for students and freelancers") shouldn't trip it,
+// only the AI habit of opening a sentence by addressing an audience segment.
 const BANNED_STYLE_PATTERNS: RegExp[] = [
-  /\bwhether you'?re\b/i,
-  /\bin today'?s fast-paced world\b/i,
+  /\bpicture this\b/i,
+  /\bimagine\b/i,
+  /\bin today'?s\b/i,
+  /\bharmonious blend\b/i,
+  /\besteemed\b/i,
+  /\bstandout\b/i,
+  /\bversatile choice\b/i,
   /\bunleash\b/i,
   /\btake your .{0,40}to the next level\b/i,
+  /\bwithout sacrificing\b/i,
+  /\bperfect companion\b/i,
+  /\bdependable partner\b/i,
+  /\bwell-rounded\b/i,
+  /\bexcels? in environments where\b/i,
+  /\bwhether you'?re\b/i,
+  /(^|[.!?]\s+|\n\s*)for students\b/i,
+  /(^|[.!?]\s+|\n\s*)office professionals will\b/i,
+  /\b(?:known for|renowned for|reputation for|trusted name in)\b/i,
+  /\bin the (?:laptop|technology|tech) industry\b/i,
+  /\bindustry[- ]leading\b/i,
+  // Carried over from the previous prompt's own banned list.
   /\bpowerful performance meets\b/i,
   /\bperfect(?:ly)? (?:for|suited)\b/i,
   /\bdesigned (?:to|for)\b/i,
-  // The Variation Engine section separately names these two as phrases not
-  // to reuse — missed on the first pass (only the "Avoid" list's 7 phrases
-  // were ported), then confirmed live: "Ideal for those who..." and
-  // "...need reliable performance..." both slipped through unflagged.
   /\bideal for\b/i,
   /\breliable performance\b/i,
 ];
@@ -265,6 +226,11 @@ const UNCONFIRMED_CLAIM_RULES: ClaimRule[] = [
   { label: "cosmetic condition claim", pattern: /\bno scratches\b|\bscratch-?free\b/i, confirmedBy: /\bscratch/i },
   { label: "genuine Windows claim", pattern: /\bgenuine windows\b/i, confirmedBy: /\bgenuine\b|\bwindows\b/i },
   { label: "warranty duration claim", pattern: /\b\d+[\s-]*years?\s+warranty\b/i, confirmedBy: /\bwarrant(?:y|ies)\b/i },
+  // "Professionally refurbished" is true of every LapShark listing (it's the
+  // whole business), but only once a condition grade was actually supplied —
+  // otherwise there's nothing in this specific product's data to hang the
+  // claim on.
+  { label: '"professionally refurbished" claim', pattern: /\bprofessionally refurbished\b/i, confirmedBy: /\brefurb\w*\b|\bcondition\b/i },
 ];
 
 function inputHaystack(input: ProductDescriptionInput): string {
@@ -273,16 +239,16 @@ function inputHaystack(input: ProductDescriptionInput): string {
     .join(" ");
 }
 
-// The prompt's own target: 400-650 words for a full listing (the "short
-// listing" 200-350 range doesn't apply here — this feature always writes
-// the main product-page description, never a short-form variant). Checked
-// with a little slack on both ends rather than the exact boundary, since a
-// description at 395 or 660 words isn't a real problem — confirmed live
-// that gpt-4o undershoots this badly without an explicit numeric target in
-// the request itself (three real runs came back at 183/222/247 words,
-// nowhere near 400, despite the system prompt stating the range).
-const MIN_WORDS = 350;
-const MAX_WORDS = 720;
+// The prompt's own target: 250-400 words for a real listing, not a
+// generic-article length. Floor set well below that on purpose — the word
+// count here is of the whole Markdown output (heading + bullets included),
+// and the store owner's own reference example, all five specs used, comes
+// out to ~185 words that way; a product with fewer known specs will land
+// even lower. "Shorter than filler" is correct per the prompt's own rule,
+// so the floor exists only to catch a genuinely thin one-liner, not to
+// force padding up toward 250.
+const MIN_WORDS = 150;
+const MAX_WORDS = 430;
 
 function wordCount(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
@@ -296,22 +262,55 @@ export function findViolations(text: string, input: ProductDescriptionInput): st
   for (const pattern of BANNED_STYLE_PATTERNS) {
     if (pattern.test(text)) violations.push(`banned phrase matching ${pattern}`);
   }
+
   const haystack = inputHaystack(input);
   for (const rule of UNCONFIRMED_CLAIM_RULES) {
     if (rule.pattern.test(text) && !rule.confirmedBy.test(haystack)) {
       violations.push(`unconfirmed ${rule.label} (not present in the supplied product data)`);
     }
   }
+
+  // "Excellent condition" is only true when the condition field is
+  // literally "Excellent" — checked against the field itself, not just
+  // presence of the word anywhere in the input (a spec value could contain
+  // "excellent" for an unrelated reason).
+  if (/\bexcellent condition\b/i.test(text) && (input.condition || "").trim().toLowerCase() !== "excellent") {
+    violations.push('unconfirmed "excellent condition" claim (condition grade is not Excellent)');
+  }
+
+  // Generic manufacturer-wide claim: "<Brand> laptops generally/typically
+  // offer/provide/are known..." — the exact pattern the prompt's own BAD
+  // examples call out, built against this product's actual brand rather
+  // than a fixed brand list.
+  if (input.brand) {
+    const brandClaim = new RegExp(`\\b${escapeRegex(input.brand)}\\b[^.]{0,80}\\b(?:generally|typically|usually|often|known for|renowned)\\b`, "i");
+    if (brandClaim.test(text)) violations.push(`generic manufacturer-wide claim about ${input.brand} not tied to this product's own data`);
+  }
+
+  // Structure check: when spec data was actually supplied, the required
+  // "Key Specifications" bullet section has to show up somewhere.
+  const hasSpecs = Object.values(input.specs || {}).some((v) => v && String(v).trim());
+  if (hasSpecs && !/key specifications/i.test(text)) {
+    violations.push('missing the required "Key Specifications" section');
+  }
+  // The opening "### Title – headline specs" heading is the other required
+  // structural element — checked as "starts with a markdown heading" rather
+  // than matching the exact title text, since the model rewords the dash
+  // summary per product.
+  if (!/^\s*###\s+\S/.test(text)) {
+    violations.push('missing the required "### Title" opening heading');
+  }
+
   const words = wordCount(text);
-  if (words < MIN_WORDS) violations.push(`too short: ${words} words (target 400-650)`);
-  if (words > MAX_WORDS) violations.push(`too long: ${words} words (target 400-650)`);
+  if (words < MIN_WORDS) violations.push(`too short: ${words} words (target 250-400)`);
+  if (words > MAX_WORDS) violations.push(`too long: ${words} words (target 250-400)`);
   return violations;
 }
 
 async function requestDescription(openai: OpenAI, messages: OpenAI.Chat.ChatCompletionMessageParam[]): Promise<string> {
   const response = await openai.chat.completions.create({
     model: MODEL,
-    max_tokens: 2000,
+    max_tokens: 1200,
     temperature: 0.8,
     messages,
   });
@@ -347,7 +346,7 @@ export async function generateProductDescription(input: ProductDescriptionInput)
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Write the product description for this laptop, using only the details given below — do not invent or assume any specification, condition detail, or claim that isn't listed. Write a full listing of 450-600 words (the system prompt's own "detailed listing" range) — this is not a short summary.\n\n${formatProductData(input)}`,
+      content: `Write the product description for this laptop, using only the details given below — do not invent or assume any specification, condition detail, or claim that isn't listed, and do not infer anything from the brand or product line in general. Use the exact shape from the system prompt: a "### Title – headline specs" heading, 2-3 short paragraphs, a "### Key Specifications" bullet section, then one short closing paragraph. Target 250-400 words total — stop as soon as it's covered, do not pad toward 400.\n\n${formatProductData(input)}`,
     },
   ];
 
@@ -361,7 +360,7 @@ export async function generateProductDescription(input: ProductDescriptionInput)
       messages.push({ role: "assistant", content: text });
       messages.push({
         role: "user",
-        content: `Rewrite this description. It breaks the style rules: ${violations.join("; ")}. Remove these specific problems — do not use those exact banned phrases anywhere, and do not restate or imply that claim unless it was actually in the original product data. Return only the corrected description, nothing else.`,
+        content: `Rewrite this description. It breaks the style rules: ${violations.join("; ")}. Remove these specific problems — do not use those exact banned phrases anywhere, do not restate or imply a claim unless it was actually in the original product data, and do not generalize about what the brand is known for. Return only the corrected description, nothing else.`,
       });
     }
   }
