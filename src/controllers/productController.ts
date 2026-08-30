@@ -9,6 +9,7 @@ import sharp from 'sharp';
 import { resolveViewSettings, viewPresetToStudioSettings, composeStudioImage, generateVariants, flattenMasterToWhite, ProductViewType, ViewPreset, VIEW_PRESETS } from '../services/imageProcessing';
 import { sanitizeSettings } from '../utils/imageSettingsValidation';
 import { removeBackgroundLocal } from '../services/localSegmentation';
+import { generateProductDescription } from '../services/descriptionGenerator';
 
 // Configure multer storage
 // const storage = multer.diskStorage({
@@ -456,5 +457,25 @@ export const processImage = async (req: Request, res: Response) => {
     // Provider/internal detail stays server-side in prod.
     const message = process.env.NODE_ENV === 'production' ? undefined : error.message;
     res.status(500).json({ message: 'Image processing failed', error: message });
+  }
+};
+
+// Writes a natural, human-sounding product description from whatever the
+// admin has already entered (title/brand/category/condition/specs) — never
+// invents a spec that wasn't given (see descriptionGenerator.ts's own
+// data-layer guard, on top of the prompt's instruction). One Claude call,
+// admin-triggered only, never automatic.
+export const generateDescription = async (req: Request, res: Response) => {
+  try {
+    const { title, brand, category, condition, specs, performanceTier, useCases } = req.body;
+    if (!title || !brand) {
+      return res.status(400).json({ message: 'title and brand are required to generate a description' });
+    }
+    const description = await generateProductDescription({ title, brand, category, condition, specs, performanceTier, useCases });
+    res.json({ success: true, description });
+  } catch (error: any) {
+    console.error('Error generating description:', error);
+    const message = process.env.NODE_ENV === 'production' ? undefined : error.message;
+    res.status(500).json({ message: 'Description generation failed', error: message });
   }
 };
