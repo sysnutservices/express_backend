@@ -24,11 +24,9 @@ const imagekit_1 = require("../services/imagekit");
 const imageProcessing_1 = require("./imageProcessing");
 const imageCostControl_1 = require("./imageCostControl");
 const localSegmentation_1 = require("./localSegmentation");
-const openaiImageService_1 = require("./openaiImageService");
-// A glare correction touching more than this share of the product region
-// (comparing the pre/post cutout) means the edit did more than reduce a
-// hotspot — flag for review rather than silently accept it.
-const REFLECTION_CHANGE_REVIEW_THRESHOLD = 15;
+const openaiClient_1 = require("./openaiClient");
+const productImageEditor_1 = require("./productImage/productImageEditor");
+const productImagePrompts_1 = require("./productImage/productImagePrompts");
 exports.DEFAULT_PROCESSING_MODE = process.env.IMAGE_PROCESSING_MODE === "ai_edit" ? "ai_edit" : "catalogue_safe";
 const CATALOGUE_SAFE_METHOD = "local-segmentation-v1";
 const MAX_AI_EDIT_ATTEMPTS = 3; // 1 initial + 2 retries, only for transient failures
@@ -120,7 +118,7 @@ function createEcommerceImage(opts) {
         var _a, _b;
         const root = yield loadRoot(opts.rootImageId);
         const mode = opts.mode === "ai_edit" ? "ai_edit" : "catalogue_safe";
-        const promptVersion = mode === "ai_edit" ? openaiImageService_1.IMAGE_PROMPT_VERSION : CATALOGUE_SAFE_METHOD;
+        const promptVersion = mode === "ai_edit" ? productImagePrompts_1.PRODUCT_IMAGE_PROMPT_VERSION : CATALOGUE_SAFE_METHOD;
         const hash = (0, imageCostControl_1.computeProcessingHash)({
             originalImageHash: root.originalImageHash,
             viewType: opts.viewType,
@@ -182,13 +180,12 @@ function createEcommerceImage(opts) {
                     yield ProductImage_1.default.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: budgetCheck.reason });
                     throw new OrchestratorError(budgetCheck.reason, budgetLimitMessage(budgetCheck.reason));
                 }
-                const prompt = (0, openaiImageService_1.buildLapsharkImagePrompt)({ viewType: opts.viewType });
                 let edited = null;
                 let lastError = null;
                 for (let attempt = 1; attempt <= MAX_AI_EDIT_ATTEMPTS; attempt++) {
                     const startedAt = Date.now();
                     try {
-                        edited = yield (0, openaiImageService_1.generateEcommerceEdit)(originalBuffer, mimeType, prompt);
+                        edited = yield (0, productImageEditor_1.editProductImage)(originalBuffer, mimeType, opts.viewType);
                         const cost = (0, imageCostControl_1.estimateCost)(edited.usage);
                         yield (0, imageCostControl_1.recordUsage)({
                             productId: root.productId,
@@ -213,7 +210,7 @@ function createEcommerceImage(opts) {
                     }
                     catch (err) {
                         lastError = err;
-                        const classified = (0, openaiImageService_1.classifyOpenAIError)(err);
+                        const classified = (0, openaiClient_1.classifyOpenAIError)(err);
                         yield (0, imageCostControl_1.recordUsage)({
                             productId: root.productId,
                             productImageId: root._id,
@@ -245,7 +242,7 @@ function createEcommerceImage(opts) {
                 // Even here, alpha/bbox comes from real segmentation of OpenAI's
                 // output — OpenAI's own transparency (if any) is never trusted.
                 cutoutBuffer = yield (0, localSegmentation_1.removeBackgroundLocal)(edited.buffer);
-                processingModel = "gpt-image-2+local-segmentation";
+                processingModel = `gpt-image-2+local-segmentation (${edited.imageType})`;
             }
             else {
                 // The whole point of the default mode: segmentation runs directly on
@@ -254,86 +251,22 @@ function createEcommerceImage(opts) {
                 cutoutBuffer = yield (0, localSegmentation_1.removeBackgroundLocal)(originalBuffer);
                 processingModel = "local-segmentation";
             }
-            // Reflection: detection is always local/free; the OpenAI-assisted
-            // correction only ever runs when explicitly turned "on", and never
-            // stacks a second OpenAI call on top of an ai_edit attempt (the source
-            // spec's "do not repeatedly process the image through AI").
+            // Reflection: detection only, always local/free, never a second OpenAI
+            // call. In ai_edit mode the comprehensive prompt already asks OpenAI to
+            // reduce glare as part of its one edit (see productImagePrompts.ts), so
+            // this just flags whatever's left over; in catalogue_safe there was
+            // never a correction step to begin with — a local, safe, general-purpose
+            // glare-removal algorithm isn't a solved problem, so this mode only ever
+            // detects and flags for manual review.
             let reflectionNote;
             const reflectionMode = (_a = opts.reflectionMode) !== null && _a !== void 0 ? _a : "auto";
             if (reflectionMode !== "off") {
                 const reflection = yield (0, imageProcessing_1.analyzeReflection)(cutoutBuffer);
                 if (reflection.detected) {
-                    const reflectionBudgetOk = reflectionMode === "on" && mode === "catalogue_safe" ? (yield (0, imageCostControl_1.checkBudgetAndLimits)((0, imageCostControl_1.estimateCost)(null).amountUsd)).allowed : false;
-                    if (reflectionBudgetOk) {
-                        const startedAt = Date.now();
-                        try {
-                            const reflectionEdit = yield (0, openaiImageService_1.generateEcommerceEdit)(originalBuffer, mimeType, (0, openaiImageService_1.buildReflectionRemovalPrompt)());
-                            const cost = (0, imageCostControl_1.estimateCost)(reflectionEdit.usage);
-                            yield (0, imageCostControl_1.recordUsage)({
-                                productId: root.productId,
-                                productImageId: root._id,
-                                imageVersionId: version._id,
-                                operation,
-                                aiModel: "gpt-image-2",
-                                originalImageHash: root.originalImageHash,
-                                processingHash: hash,
-                                promptVersion: openaiImageService_1.REFLECTION_PROMPT_VERSION,
-                                processingConfigVersion: imageProcessing_1.PROCESSING_CONFIG_VERSION,
-                                status: "success",
-                                inputUsage: reflectionEdit.usage,
-                                outputUsage: reflectionEdit.usage,
-                                totalUsage: reflectionEdit.usage,
-                                estimatedCost: cost.amountUsd,
-                                estimatedCostIsApproximate: cost.approximate,
-                                durationMs: Date.now() - startedAt,
-                                initiatedBy: opts.initiatedBy ? new mongoose_1.Types.ObjectId(opts.initiatedBy) : null,
-                            });
-                            const correctedCutout = yield (0, localSegmentation_1.removeBackgroundLocal)(reflectionEdit.buffer);
-                            const changePercent = yield (0, imageProcessing_1.computeRegionChangePercent)(cutoutBuffer, correctedCutout);
-                            cutoutBuffer = correctedCutout;
-                            processingModel += "+reflection-correction";
-                            reflectionNote =
-                                changePercent > REFLECTION_CHANGE_REVIEW_THRESHOLD
-                                    ? `Reflection correction changed ~${changePercent}% of the product region — please review closely`
-                                    : `Reflection glare reduced (~${reflection.hotspotPercent}% of frame, ${changePercent}% region change)`;
-                        }
-                        catch (err) {
-                            // Reflection correction failing isn't fatal to the whole
-                            // attempt — keep the uncorrected (but still valid) cutout and
-                            // just note that glare was seen but not addressed.
-                            const classified = (0, openaiImageService_1.classifyOpenAIError)(err);
-                            yield (0, imageCostControl_1.recordUsage)({
-                                productId: root.productId,
-                                productImageId: root._id,
-                                imageVersionId: version._id,
-                                operation,
-                                aiModel: "gpt-image-2",
-                                originalImageHash: root.originalImageHash,
-                                processingHash: hash,
-                                promptVersion: openaiImageService_1.REFLECTION_PROMPT_VERSION,
-                                processingConfigVersion: imageProcessing_1.PROCESSING_CONFIG_VERSION,
-                                status: classified.transient ? "error_transient" : "error_permanent",
-                                inputUsage: null,
-                                outputUsage: null,
-                                totalUsage: null,
-                                estimatedCost: null,
-                                estimatedCostIsApproximate: true,
-                                durationMs: Date.now() - startedAt,
-                                errorMessage: classified.message.slice(0, 500),
-                                initiatedBy: opts.initiatedBy ? new mongoose_1.Types.ObjectId(opts.initiatedBy) : null,
-                            });
-                            reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — automatic correction failed`;
-                        }
-                    }
-                    else if (reflectionMode !== "on") {
-                        reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — enable Reflection Removal to correct it`;
-                    }
-                    else if (mode !== "catalogue_safe") {
-                        reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI Edit mode already used its one OpenAI call)`;
-                    }
-                    else {
-                        reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI processing currently disabled or over budget)`;
-                    }
+                    reflectionNote =
+                        mode === "ai_edit"
+                            ? `Possible residual reflection/glare detected (~${reflection.hotspotPercent}% of frame) after AI editing — review closely`
+                            : `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — AI Edit mode attempts to reduce this, Catalogue Safe only flags it`;
                 }
             }
             const cutoutUpload = yield (0, imagekit_1.uploadBufferToImageKit)(cutoutBuffer, "/lapshark/products/cutouts", `${opts.viewType} cutout`);

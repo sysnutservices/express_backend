@@ -509,32 +509,6 @@ export async function analyzeReflection(cutoutBuffer: Buffer): Promise<Reflectio
   return { detected, hotspotPercent };
 }
 
-// Coarse perceptual-difference proxy for "how much did this edit change the
-// product region" — resizes both to a small fixed size (so a resolution or
-// crop-boundary difference between the two doesn't itself register as
-// change) and averages per-pixel colour distance. Used to flag a reflection
-// edit that touched more than the glare it was asked to touch, never to
-// judge product-preservation with pixel-perfect precision.
-const REGION_DIFF_SIZE = 128;
-
-export async function computeRegionChangePercent(beforeBuffer: Buffer, afterBuffer: Buffer): Promise<number> {
-  const [before, after] = await Promise.all(
-    [beforeBuffer, afterBuffer].map((buf) =>
-      sharp(buf).resize(REGION_DIFF_SIZE, REGION_DIFF_SIZE, { fit: "fill" }).removeAlpha().raw().toBuffer()
-    )
-  );
-  const pixelCount = REGION_DIFF_SIZE * REGION_DIFF_SIZE;
-  let changed = 0;
-  for (let i = 0; i < pixelCount; i++) {
-    const o = i * 3;
-    const dr = before[o] - after[o];
-    const dg = before[o + 1] - after[o + 1];
-    const db = before[o + 2] - after[o + 2];
-    const distance = Math.sqrt(dr * dr + dg * dg + db * db);
-    if (distance > 30) changed++; // ~10% of the max possible 0..441 distance
-  }
-  return Math.round((changed / pixelCount) * 1000) / 10;
-}
 
 // Downscales the already-composited master into the catalogue's other two
 // sizes. No second PhotoRoom call and no re-compositing — same master pixels,

@@ -11,7 +11,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.testAiConnection = exports.updateAiSettings = exports.getAiSettingsStatus = void 0;
 const envFile_1 = require("../utils/envFile");
-const openaiImageService_1 = require("../services/openaiImageService");
+const openaiClient_1 = require("../services/openaiClient");
 // Admin-only key management for OPENAI_API_KEY. Persists to the backend's
 // .env file (never the database, never echoed back to the frontend) —
 // see envFile.ts. The key value itself never appears in a log line here.
@@ -42,7 +42,7 @@ const updateAiSettings = (req, res) => __awaiter(void 0, void 0, void 0, functio
 });
 exports.updateAiSettings = updateAiSettings;
 const testAiConnection = (_req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const result = yield (0, openaiImageService_1.testConnection)();
+    const result = yield (0, openaiClient_1.testConnection)();
     res.json({ success: result.success, message: result.message });
 });
 exports.testAiConnection = testAiConnection;

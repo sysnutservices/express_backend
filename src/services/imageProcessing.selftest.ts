@@ -19,7 +19,6 @@ import {
   flattenMasterToWhite,
   analyzeExposure,
   analyzeReflection,
-  computeRegionChangePercent,
   StudioSettings,
 } from "./imageProcessing";
 
@@ -201,16 +200,6 @@ async function main() {
   const brightProductPng = await sharp(brightProductBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
   const brightResult = await analyzeReflection(brightProductPng);
   assert.strictEqual(brightResult.detected, false, "a naturally bright/silver product must not be flagged as glare");
-
-  // 11. computeRegionChangePercent: identical images show 0% change;
-  //     substantially different images show a large change.
-  const sameA = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
-  const sameB = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
-  assert.strictEqual(await computeRegionChangePercent(sameA, sameB), 0, "identical images must show 0% change");
-
-  const different = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#ffffff" } }).png().toBuffer();
-  const bigChange = await computeRegionChangePercent(sameA, different);
-  assert.ok(bigChange > 90, `very different images should show a large change percentage, got ${bigChange}%`);
 
   console.log("imageProcessing.selftest: all assertions passed");
 }
