@@ -1,5 +1,5 @@
 import express from 'express';
-import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage } from '../controllers/productController';
+import { getProducts, getProductById, createProduct, updateProduct, deleteProduct, upload, getProductBySlug, processImage, generateDescription } from '../controllers/productController';
 import {
     uploadOriginal, uploadOriginalMiddleware, listProductImages, processRootImage,
     updateVersionSettings, approveVersion, rejectVersion, returnVersionToReview,
@@ -46,10 +46,14 @@ const uploadFields = upload.fields([
 router.route('/products').get(publicCache, getProducts).post(protect, admin, uploadFields, createProduct);
 router.route('/products/:id').get(publicCache, getProductById).put(protect, admin, uploadFields, updateProduct).delete(protect, admin, deleteProduct);
 router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
-// Runs PhotoRoom background removal + studio compositing on a single picked
+// Runs local background removal + studio compositing on a single picked
 // file (or an already-hosted URL, for reprocessing) and returns the hosted
-// result — called by the admin form before Save, not part of the product CRUD.
+// result — manual only (the Reprocess button / retry click), never
+// automatic on upload. Not part of the product CRUD.
 router.post('/products/process-image', protect, admin, upload.single('image'), processImage);
+// Claude-written product description from whatever the admin has already
+// entered — one call per click, never automatic, never invents a spec.
+router.post('/products/generate-description', protect, admin, generateDescription);
 
 // Local-segmentation + Sharp product-image workflow (original -> version ->
 // review -> approve -> publish). Kept fully separate from the routes above:
