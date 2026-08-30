@@ -19,7 +19,7 @@ import {
 import { computeProcessingHash, estimateCost, checkBudgetAndLimits, recordUsage } from "./imageCostControl";
 import { removeBackgroundLocal } from "./localSegmentation";
 import { classifyOpenAIError } from "./openaiClient";
-import { editProductImage } from "./productImage/productImageEditor";
+import { editProductImage, GeometryMismatchError } from "./productImage/productImageEditor";
 import { PRODUCT_IMAGE_PROMPT_VERSION } from "./productImage/productImagePrompts";
 
 export type BrightnessMode = "auto" | "original"; // "manual" is just the caller explicitly setting settings.brightness/contrast — no separate mode value needed
@@ -265,7 +265,13 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
           break;
         } catch (err) {
           lastError = err;
+          // A geometry mismatch (product got rotated/reoriented) is model
+          // unpredictability on this one attempt, not invalid input or a
+          // content-policy rejection — worth a retry, same budget as a
+          // transient HTTP error.
+          const isGeometryMismatch = err instanceof GeometryMismatchError;
           const classified = classifyOpenAIError(err);
+          const transient = isGeometryMismatch || classified.transient;
           await recordUsage({
             productId: root.productId,
             productImageId: root._id as Types.ObjectId,
@@ -276,17 +282,17 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
             processingHash: hash,
             promptVersion,
             processingConfigVersion: PROCESSING_CONFIG_VERSION,
-            status: classified.transient ? "error_transient" : "error_permanent",
+            status: transient ? "error_transient" : "error_permanent",
             inputUsage: null,
             outputUsage: null,
             totalUsage: null,
             estimatedCost: null,
             estimatedCostIsApproximate: true,
             durationMs: Date.now() - startedAt,
-            errorMessage: classified.message.slice(0, 500),
+            errorMessage: (isGeometryMismatch ? (err as Error).message : classified.message).slice(0, 500),
             initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
           });
-          if (!classified.transient || attempt >= MAX_AI_EDIT_ATTEMPTS) break;
+          if (!transient || attempt >= MAX_AI_EDIT_ATTEMPTS) break;
         }
       }
 
