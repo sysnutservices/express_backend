@@ -70,22 +70,71 @@ function main() {
   assert.ok(round2.some((v) => /testing\/verification/i.test(v)), "must catch the reworded testing claims");
 
   // 4. A clean draft with no banned phrases and no unconfirmed claims must
-  //    report zero violations — the check isn't just permanently triggered.
+  //    report zero violations on those two checks — the check isn't just
+  //    permanently triggered. (Deliberately short, so filtered to just the
+  //    style/claim checks here — length is its own concern, tested in 7.)
   const cleanDraft =
     "The Dell Latitude 5420 is a dependable business laptop. It handles office work, video calls and " +
     "everyday tasks without any fuss. This unit is refurbished.";
-  assert.deepStrictEqual(findViolations(cleanDraft, latitudeInput), []);
+  assert.deepStrictEqual(
+    findViolations(cleanDraft, latitudeInput).filter((v) => !/too short|too long/i.test(v)),
+    []
+  );
 
   // 5. A claim that IS actually backed by the input data is not a
   //    violation — e.g. an admin who genuinely entered a warranty/battery/
   //    testing spec must be allowed to have that claim appear.
   const warrantyInput = { title: "HP ProBook", brand: "HP", specs: { warranty: "1 Year Warranty" } };
   const draftWithRealWarranty = "This HP ProBook comes with a 1 year warranty for peace of mind.";
-  assert.deepStrictEqual(findViolations(draftWithRealWarranty, warrantyInput), []);
+  assert.deepStrictEqual(
+    findViolations(draftWithRealWarranty, warrantyInput).filter((v) => !/too short|too long/i.test(v)),
+    []
+  );
 
   const testedInput = { title: "Acer Aspire 5", brand: "Acer", condition: "Refurbished and tested" };
   const draftWithRealTestingClaim = "This Acer Aspire 5 has been tested and works reliably.";
-  assert.deepStrictEqual(findViolations(draftWithRealTestingClaim, testedInput), []);
+  assert.deepStrictEqual(
+    findViolations(draftWithRealTestingClaim, testedInput).filter((v) => !/too short|too long/i.test(v)),
+    []
+  );
+
+  // 6. "ideal for" / "reliable performance" — the Variation Engine section's
+  //    own named phrases, missed on the first pass and confirmed live in
+  //    real generated output (an HP listing used "Ideal for those who...",
+  //    a ThinkPad listing used "...need reliable performance...").
+  const genericInput = { title: "Generic Laptop", brand: "Generic" };
+  assert.ok(
+    findViolations("Ideal for students and professionals alike.", genericInput).some((v) => /ideal for/i.test(v))
+  );
+  assert.ok(
+    findViolations("This machine offers reliable performance every day.", genericInput).some((v) => /reliable performance/i.test(v))
+  );
+
+  // 7b. "verify"/"inspect" bare-verb gap — confirmed live: a ThinkPad E14 run
+  //     produced "undergo a series of rigorous tests and inspections to
+  //     verify their functionality" and findViolations reported NONE,
+  //     because the old pattern only matched "verified"/"verification".
+  const verifyDraft =
+    "This refurbished laptop has undergone a series of rigorous tests and inspections to verify their functionality.";
+  assert.ok(
+    findViolations(verifyDraft, latitudeInput).some((v) => /testing\/verification/i.test(v)),
+    "must catch bare \"verify\"/\"inspections\", not just \"verified\""
+  );
+
+  // 7. Word count — confirmed live that gpt-4o undershoots the prompt's own
+  //    400-650 word target badly (three real runs: 183/222/247 words) unless
+  //    this is actually checked, not just stated in the system prompt.
+  const shortDraft = "This is a short laptop description that is nowhere near the required word count target.";
+  const shortViolations = findViolations(shortDraft, genericInput);
+  assert.ok(shortViolations.some((v) => /too short/i.test(v)), "a short draft must be flagged");
+
+  const longDraft = Array(730).fill("word").join(" ");
+  const longViolations = findViolations(longDraft, genericInput);
+  assert.ok(longViolations.some((v) => /too long/i.test(v)), "an overly long draft must be flagged");
+
+  const rightLengthDraft = Array(500).fill("word").join(" ");
+  const rightLengthViolations = findViolations(rightLengthDraft, genericInput);
+  assert.ok(!rightLengthViolations.some((v) => /too short|too long/i.test(v)), "a draft within 350-720 words must not be flagged for length");
 
   console.log("descriptionGenerator.selftest: all assertions passed");
 }

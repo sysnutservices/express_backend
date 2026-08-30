@@ -232,6 +232,12 @@ const BANNED_STYLE_PATTERNS: RegExp[] = [
   /\bpowerful performance meets\b/i,
   /\bperfect(?:ly)? (?:for|suited)\b/i,
   /\bdesigned (?:to|for)\b/i,
+  // The Variation Engine section separately names these two as phrases not
+  // to reuse — missed on the first pass (only the "Avoid" list's 7 phrases
+  // were ported), then confirmed live: "Ideal for those who..." and
+  // "...need reliable performance..." both slipped through unflagged.
+  /\bideal for\b/i,
+  /\breliable performance\b/i,
 ];
 
 // The prompt's own explicit "Do not claim" list, generalized to regex
@@ -249,7 +255,11 @@ interface ClaimRule {
   confirmedBy: RegExp;
 }
 const UNCONFIRMED_CLAIM_RULES: ClaimRule[] = [
-  { label: "testing/verification claim", pattern: /\b(?:tested|verifi(?:ed|cation)|quality[- ]?(?:checked|assured|standards?))\b/i, confirmedBy: /\btest(?:ed|ing)?\b|\bverif(?:y|ied|ication)\b|\bquality[- ]?(?:check|assur|standard)/i },
+  // \w* stems (verif\w*, inspect\w*) rather than an enumerated suffix list —
+  // confirmed live that a bare "verify" (not "verified") slipped through
+  // enumerated suffixes, in a sentence about "tests and inspections" that
+  // "inspect" itself wasn't even covering.
+  { label: "testing/verification claim", pattern: /\btested\b|\bverif\w*\b|\binspect\w*\b|\bquality[- ]?(?:checked|assured|standards?)\b/i, confirmedBy: /\btest(?:ed|ing)?\b|\bverif\w*\b|\binspect\w*\b|\bquality[- ]?(?:check|assur|standard)/i },
   { label: '"like new" claim', pattern: /\blike new\b/i, confirmedBy: /\blike new\b/i },
   { label: "battery condition claim", pattern: /\b(?:excellent|original|100%|brand new) battery\b|\bbattery health\b/i, confirmedBy: /\bbattery\b/i },
   { label: "cosmetic condition claim", pattern: /\bno scratches\b|\bscratch-?free\b/i, confirmedBy: /\bscratch/i },
@@ -261,6 +271,21 @@ function inputHaystack(input: ProductDescriptionInput): string {
   return [input.title, input.brand, input.category, input.condition, input.performanceTier, ...(input.useCases || []), ...Object.values(input.specs || {})]
     .filter(Boolean)
     .join(" ");
+}
+
+// The prompt's own target: 400-650 words for a full listing (the "short
+// listing" 200-350 range doesn't apply here — this feature always writes
+// the main product-page description, never a short-form variant). Checked
+// with a little slack on both ends rather than the exact boundary, since a
+// description at 395 or 660 words isn't a real problem — confirmed live
+// that gpt-4o undershoots this badly without an explicit numeric target in
+// the request itself (three real runs came back at 183/222/247 words,
+// nowhere near 400, despite the system prompt stating the range).
+const MIN_WORDS = 350;
+const MAX_WORDS = 720;
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
 // Pure, independently testable — the actual enforcement logic, not just a
@@ -277,6 +302,9 @@ export function findViolations(text: string, input: ProductDescriptionInput): st
       violations.push(`unconfirmed ${rule.label} (not present in the supplied product data)`);
     }
   }
+  const words = wordCount(text);
+  if (words < MIN_WORDS) violations.push(`too short: ${words} words (target 400-650)`);
+  if (words > MAX_WORDS) violations.push(`too long: ${words} words (target 400-650)`);
   return violations;
 }
 
@@ -319,7 +347,7 @@ export async function generateProductDescription(input: ProductDescriptionInput)
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Write the product description for this laptop, using only the details given below — do not invent or assume any specification, condition detail, or claim that isn't listed.\n\n${formatProductData(input)}`,
+      content: `Write the product description for this laptop, using only the details given below — do not invent or assume any specification, condition detail, or claim that isn't listed. Write a full listing of 450-600 words (the system prompt's own "detailed listing" range) — this is not a short summary.\n\n${formatProductData(input)}`,
     },
   ];
 
