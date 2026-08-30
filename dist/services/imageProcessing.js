@@ -19,6 +19,9 @@ exports.computeTargetSize = computeTargetSize;
 exports.computePosition = computePosition;
 exports.flattenMasterToWhite = flattenMasterToWhite;
 exports.computeOccupancy = computeOccupancy;
+exports.analyzeExposure = analyzeExposure;
+exports.analyzeReflection = analyzeReflection;
+exports.computeRegionChangePercent = computeRegionChangePercent;
 exports.generateVariants = generateVariants;
 exports.validateMasterImage = validateMasterImage;
 exports.resolveViewSettings = resolveViewSettings;
@@ -258,8 +261,9 @@ const VARIANT_SIZES = { product: 1200, thumbnail: 500 };
 // Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes).
 // Feeds the processing fingerprint in imageCostControl.ts — bump this only
 // when a change here should invalidate cached/approved results. v2: dropped
-// auto-normalize, retuned occupancy/shadow (see VIEW_PRESETS/applyEnhancement).
-exports.PROCESSING_CONFIG_VERSION = "v2";
+// auto-normalize, retuned occupancy/shadow. v3: auto exposure/reflection
+// analysis (see analyzeExposure/analyzeReflection).
+exports.PROCESSING_CONFIG_VERSION = "v3";
 // Derives the opaque white-background ecommerce version from an already-
 // composed transparent master — a flatten + format convert, not a
 // re-composite, so the two versions stay pixel-identical everywhere but the
@@ -293,6 +297,103 @@ function computeOccupancy(masterBuffer) {
         catch (_a) {
             return 0;
         }
+    });
+}
+// Conservative bounds, not a general-purpose auto-levels tool: nudges a
+// photo toward a healthy exposure band, never a large correction. Analyzed
+// on the SEGMENTED CUTOUT, not the raw original with its background still
+// attached — a plain white studio backdrop would otherwise dominate the
+// histogram and make every photo read as "overexposed" regardless of how
+// the product itself actually looks.
+const BRIGHTNESS_MAX_ADJUST = 0.08; // ±8%
+const CONTRAST_MAX_ADJUST = 0.05; // +5% (only ever brightens a flat/hazy image, never reduces contrast)
+const HEALTHY_MEAN_LOW = 90;
+const HEALTHY_MEAN_HIGH = 170;
+const HEALTHY_STDEV_MIN = 35;
+function analyzeExposure(cutoutBuffer) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const stats = yield (0, sharp_1.default)(cutoutBuffer).stats();
+        const rgb = stats.channels.slice(0, 3);
+        const meanLuminance = rgb.reduce((sum, c) => sum + c.mean, 0) / rgb.length;
+        const meanStdev = rgb.reduce((sum, c) => sum + c.stdev, 0) / rgb.length;
+        let brightness = 1;
+        if (meanLuminance < HEALTHY_MEAN_LOW) {
+            const deficit = (HEALTHY_MEAN_LOW - meanLuminance) / HEALTHY_MEAN_LOW;
+            brightness = 1 + Math.min(BRIGHTNESS_MAX_ADJUST, deficit * BRIGHTNESS_MAX_ADJUST * 2);
+        }
+        else if (meanLuminance > HEALTHY_MEAN_HIGH) {
+            const excess = (meanLuminance - HEALTHY_MEAN_HIGH) / (255 - HEALTHY_MEAN_HIGH);
+            brightness = 1 - Math.min(BRIGHTNESS_MAX_ADJUST, excess * BRIGHTNESS_MAX_ADJUST * 2);
+        }
+        let contrast = 1;
+        if (meanStdev < HEALTHY_STDEV_MIN) {
+            const deficit = (HEALTHY_STDEV_MIN - meanStdev) / HEALTHY_STDEV_MIN;
+            contrast = 1 + Math.min(CONTRAST_MAX_ADJUST, deficit * CONTRAST_MAX_ADJUST * 2);
+        }
+        return { brightness, contrast, needsCorrection: brightness !== 1 || contrast !== 1 };
+    });
+}
+// Looks for a small, near-blown-out ("hotspot") region inside the product
+// silhouette — a light-glare signature — without flagging a laptop that's
+// just naturally silver/white overall (that would cover most of the
+// product, not a small fraction of it). Deliberately does NOT attempt to
+// locate or remove the reflection itself here — a safe, general-purpose
+// deterministic reflection-removal algorithm is a real computer-vision
+// problem, not a few lines of Sharp; this only decides whether one is
+// probably present, for the "Auto" mode's review flag and the "On" mode's
+// decision to spend an OpenAI call on it at all.
+const HOTSPOT_CHANNEL_THRESHOLD = 250;
+const HOTSPOT_MIN_PERCENT = 1.5;
+const HOTSPOT_MAX_PERCENT = 20;
+const NATURALLY_BRIGHT_PRODUCT_MEAN = 230;
+function analyzeReflection(cutoutBuffer) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const { data, info } = yield (0, sharp_1.default)(cutoutBuffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        const channels = info.channels;
+        let productPixels = 0;
+        let hotspotPixels = 0;
+        let brightnessSum = 0;
+        for (let i = 0; i < data.length; i += channels) {
+            if (data[i + 3] < 200)
+                continue; // outside the product silhouette
+            const r = data[i], g = data[i + 1], b = data[i + 2];
+            productPixels++;
+            brightnessSum += (r + g + b) / 3;
+            if (r > HOTSPOT_CHANNEL_THRESHOLD && g > HOTSPOT_CHANNEL_THRESHOLD && b > HOTSPOT_CHANNEL_THRESHOLD)
+                hotspotPixels++;
+        }
+        if (productPixels === 0)
+            return { detected: false, hotspotPercent: 0 };
+        const hotspotPercent = Math.round((hotspotPixels / productPixels) * 1000) / 10;
+        const meanBrightness = brightnessSum / productPixels;
+        const detected = hotspotPercent >= HOTSPOT_MIN_PERCENT &&
+            hotspotPercent <= HOTSPOT_MAX_PERCENT &&
+            meanBrightness < NATURALLY_BRIGHT_PRODUCT_MEAN;
+        return { detected, hotspotPercent };
+    });
+}
+// Coarse perceptual-difference proxy for "how much did this edit change the
+// product region" — resizes both to a small fixed size (so a resolution or
+// crop-boundary difference between the two doesn't itself register as
+// change) and averages per-pixel colour distance. Used to flag a reflection
+// edit that touched more than the glare it was asked to touch, never to
+// judge product-preservation with pixel-perfect precision.
+const REGION_DIFF_SIZE = 128;
+function computeRegionChangePercent(beforeBuffer, afterBuffer) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const [before, after] = yield Promise.all([beforeBuffer, afterBuffer].map((buf) => (0, sharp_1.default)(buf).resize(REGION_DIFF_SIZE, REGION_DIFF_SIZE, { fit: "fill" }).removeAlpha().raw().toBuffer()));
+        const pixelCount = REGION_DIFF_SIZE * REGION_DIFF_SIZE;
+        let changed = 0;
+        for (let i = 0; i < pixelCount; i++) {
+            const o = i * 3;
+            const dr = before[o] - after[o];
+            const dg = before[o + 1] - after[o + 1];
+            const db = before[o + 2] - after[o + 2];
+            const distance = Math.sqrt(dr * dr + dg * dg + db * db);
+            if (distance > 30)
+                changed++; // ~10% of the max possible 0..441 distance
+        }
+        return Math.round((changed / pixelCount) * 1000) / 10;
     });
 }
 // Downscales the already-composited master into the catalogue's other two

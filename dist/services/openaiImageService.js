@@ -45,8 +45,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.VIEW_TYPE_DESCRIPTIONS = exports.IMAGE_PROMPT_VERSION = void 0;
+exports.REFLECTION_PROMPT_VERSION = exports.VIEW_TYPE_DESCRIPTIONS = exports.IMAGE_PROMPT_VERSION = void 0;
 exports.buildLapsharkImagePrompt = buildLapsharkImagePrompt;
+exports.buildReflectionRemovalPrompt = buildReflectionRemovalPrompt;
 exports.testConnection = testConnection;
 exports.computeEditSize = computeEditSize;
 exports.generateEcommerceEdit = generateEcommerceEdit;
@@ -159,6 +160,31 @@ function buildLapsharkImagePrompt(opts) {
     var _a;
     const viewSentence = (_a = exports.VIEW_TYPE_DESCRIPTIONS[opts.viewType]) !== null && _a !== void 0 ? _a : exports.VIEW_TYPE_DESCRIPTIONS.custom;
     return `${CORE_INSTRUCTIONS}\n\n${viewSentence}`;
+}
+// Reflection removal's own prompt, kept separate from buildLapsharkImagePrompt
+// — a background edit and a glare-reduction edit are different operations
+// and must never share one instruction block. Same avoid-list of
+// beautifying vocabulary applies.
+exports.REFLECTION_PROMPT_VERSION = "reflection-v1";
+function buildReflectionRemovalPrompt() {
+    return `Reduce only the obvious photographic light glare/reflection visible
+on the laptop surface.
+
+Preserve the exact physical laptop.
+
+Do not regenerate or redraw any part of the laptop.
+
+Do not alter the chassis shape, colour, texture, keyboard, trackpad,
+screen, logos, stickers, ports, hinges, scratches, scuffs, dents or
+physical condition.
+
+Do not remove genuine product imperfections.
+
+Do not reconstruct areas where reflection overlaps important product
+details.
+
+If removing the reflection would require inventing product detail,
+leave the reflection unchanged.`;
 }
 let client = null;
 let clientKey = null;

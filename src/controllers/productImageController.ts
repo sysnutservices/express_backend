@@ -16,6 +16,8 @@ import {
   OrchestratorErrorCode,
   ProcessingMode,
   DEFAULT_PROCESSING_MODE,
+  BrightnessMode,
+  ReflectionMode,
 } from "../services/productImageOrchestrator";
 
 export const uploadOriginalMiddleware = upload.single("image");
@@ -30,6 +32,14 @@ function resolveViewType(raw: unknown): ProductViewType {
 // because the field was present but malformed.
 function resolveMode(raw: unknown): ProcessingMode {
   return raw === "catalogue_safe" || raw === "ai_edit" ? raw : DEFAULT_PROCESSING_MODE;
+}
+
+function resolveBrightnessMode(raw: unknown): BrightnessMode {
+  return raw === "original" ? "original" : "auto";
+}
+
+function resolveReflectionMode(raw: unknown): ReflectionMode {
+  return raw === "off" || raw === "on" ? raw : "auto";
 }
 
 function errorResponse(res: Response, err: unknown) {
@@ -214,11 +224,15 @@ export const processRootImage = async (req: Request, res: Response) => {
     const viewType = resolveViewType(req.body.viewType);
     const settings = sanitizeSettings(req.body.settings);
     const mode = resolveMode(req.body.mode);
+    const brightnessMode = resolveBrightnessMode(req.body.brightnessMode);
+    const reflectionMode = resolveReflectionMode(req.body.reflectionMode);
     const version = await createEcommerceImage({
       rootImageId: req.params.rootImageId,
       viewType,
       settings,
       mode,
+      brightnessMode,
+      reflectionMode,
       initiatedBy: (req as any).user?._id ? String((req as any).user._id) : null,
     });
     res.json({
