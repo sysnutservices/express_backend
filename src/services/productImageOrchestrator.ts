@@ -19,7 +19,7 @@ import {
 import { computeProcessingHash, estimateCost, checkBudgetAndLimits, recordUsage } from "./imageCostControl";
 import { removeBackgroundLocal } from "./localSegmentation";
 import { classifyOpenAIError } from "./openaiClient";
-import { editProductImage, GeometryMismatchError, MaskViolationError } from "./productImage/productImageEditor";
+import { editProductImage } from "./productImage/productImageEditor";
 import { PRODUCT_IMAGE_PROMPT_VERSION } from "./productImage/productImagePrompts";
 
 export type BrightnessMode = "auto" | "original"; // "manual" is just the caller explicitly setting settings.brightness/contrast — no separate mode value needed
@@ -182,11 +182,20 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
   // cutout. Zero segmentation/OpenAI re-runs. Keyed on mode (via
   // promptVersion) so a catalogue_safe result is never mistaken for an
   // ai_edit one for the same viewType, or vice versa.
-  const reusable = await ProductImage.findOne({
-    rootImageId: root._id,
-    processingHash: hash,
-    status: { $in: ["READY_FOR_REVIEW", "APPROVED", "PUBLISHED"] },
-  }).sort({ createdAt: -1 });
+  //
+  // catalogue_safe only — recomposeVersion needs a cached cutoutImageUrl to
+  // recompute from, which an ai_edit result no longer has (v2.0: no local
+  // segmentation/cutout in that path at all, see the ai_edit branch below).
+  // ai_edit always regenerates fresh; there's nothing to "recompose" from a
+  // finished GPT photo anyway.
+  const reusable =
+    mode === "catalogue_safe"
+      ? await ProductImage.findOne({
+          rootImageId: root._id,
+          processingHash: hash,
+          status: { $in: ["READY_FOR_REVIEW", "APPROVED", "PUBLISHED"] },
+        }).sort({ createdAt: -1 })
+      : null;
   if (reusable) {
     return recomposeVersion(String(reusable._id), opts.settings);
   }
@@ -223,13 +232,13 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
   try {
     const { buffer: originalBuffer, mimeType } = await fetchImageBytes(root.originalImageUrl!);
 
-    let cutoutBuffer: Buffer;
-    let processingModel: string;
-
     if (mode === "ai_edit") {
       // Explicit, admin-selected opt-in only (never the silent default) —
-      // accepts the risk that OpenAI alters product pixels. Costs money, so
-      // this is the only branch that budget-checks/records OpenAI usage.
+      // accepts the risk that OpenAI alters product pixels; identity is
+      // carried by the prompt alone (see productImagePrompts.ts's v2.0
+      // comment) — manual review before publish is what actually protects
+      // it, not a runtime check. Costs money, so this is the only branch
+      // that budget-checks/records OpenAI usage.
       const budgetCheck = await checkBudgetAndLimits(estimateCost(null).amountUsd);
       if (!budgetCheck.allowed) {
         await ProductImage.updateOne({ _id: version._id }, { status: "PROCESSING_FAILED", rejectionReason: budgetCheck.reason });
@@ -265,15 +274,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
           break;
         } catch (err) {
           lastError = err;
-          // A geometry mismatch (product got rotated/reoriented) or a mask
-          // violation (OpenAI altered pixels the mask was supposed to
-          // protect) is model unpredictability on this one attempt, not
-          // invalid input or a content-policy rejection — worth a retry,
-          // same budget as a transient HTTP error.
-          const isGeometryMismatch = err instanceof GeometryMismatchError;
-          const isMaskViolation = err instanceof MaskViolationError;
           const classified = classifyOpenAIError(err);
-          const transient = isGeometryMismatch || isMaskViolation || classified.transient;
           await recordUsage({
             productId: root.productId,
             productImageId: root._id as Types.ObjectId,
@@ -284,17 +285,17 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
             processingHash: hash,
             promptVersion,
             processingConfigVersion: PROCESSING_CONFIG_VERSION,
-            status: transient ? "error_transient" : "error_permanent",
+            status: classified.transient ? "error_transient" : "error_permanent",
             inputUsage: null,
             outputUsage: null,
             totalUsage: null,
             estimatedCost: null,
             estimatedCostIsApproximate: true,
             durationMs: Date.now() - startedAt,
-            errorMessage: (isGeometryMismatch || isMaskViolation ? (err as Error).message : classified.message).slice(0, 500),
+            errorMessage: classified.message.slice(0, 500),
             initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
           });
-          if (!transient || attempt >= MAX_AI_EDIT_ATTEMPTS) break;
+          if (!classified.transient || attempt >= MAX_AI_EDIT_ATTEMPTS) break;
         }
       }
 
@@ -303,34 +304,53 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
         throw new OrchestratorError("OPENAI_FAILED", lastError instanceof Error ? lastError.message : "AI image editing failed");
       }
 
-      // Even here, alpha/bbox comes from real segmentation of OpenAI's
-      // output — OpenAI's own transparency (if any) is never trusted.
-      cutoutBuffer = await removeBackgroundLocal(edited.buffer);
-      processingModel = `gpt-image-2+local-segmentation (${edited.imageType})`;
-    } else {
-      // The whole point of the default mode: segmentation runs directly on
-      // the ORIGINAL photo's own pixels, never on a generative model's
-      // regenerated output.
-      cutoutBuffer = await removeBackgroundLocal(originalBuffer);
-      processingModel = "local-segmentation";
+      // gpt-image-2's own 1024x1024 output IS the final product image — no
+      // local segmentation, no Sharp recompose. Sharp only derives the
+      // smaller catalogue sizes from these exact pixels (generateVariants),
+      // never a second, independently-generated image.
+      const masterBuffer = edited.buffer;
+      const occupancyPercent = await computeOccupancy(masterBuffer);
+      const variants = await generateVariants(masterBuffer, 1024);
+      const product = await Product.findById(root.productId).select("title").lean();
+      const nameHint = [product?.title, opts.viewType.replace(/_/g, " ")].filter(Boolean).join(" ") || "laptop";
+      const [masterUpload, productUpload, thumbnailUpload] = await Promise.all([
+        uploadBufferToImageKit(masterBuffer, "/lapshark/products", nameHint),
+        uploadBufferToImageKit(variants.product.buffer, "/lapshark/products/variants", `${nameHint} product`),
+        uploadBufferToImageKit(variants.thumbnail.buffer, "/lapshark/products/variants", `${nameHint} thumbnail`),
+      ]);
+
+      await ProductImage.updateMany({ rootImageId: root._id, _id: { $ne: version._id }, isActive: true }, { isActive: false });
+
+      version.status = "READY_FOR_REVIEW";
+      version.occupancyPercent = occupancyPercent;
+      // No cutout, no transparent master — the gpt-image-2 output has no
+      // real alpha channel to offer (it's a flat white-background photo);
+      // both stay null (the admin UI already treats transparentMasterUrl as
+      // optional — see ProductImageWorkflow.tsx).
+      version.masterImageUrl = masterUpload.url;
+      version.productImageUrl = productUpload.url;
+      version.thumbnailImageUrl = thumbnailUpload.url;
+      version.processingModel = "gpt-image-2";
+      version.processingSettings = null;
+      version.isActive = true;
+      await version.save();
+      return version;
     }
 
-    // Reflection: detection only, always local/free, never a second OpenAI
-    // call. In ai_edit mode the comprehensive prompt already asks OpenAI to
-    // reduce glare as part of its one edit (see productImagePrompts.ts), so
-    // this just flags whatever's left over; in catalogue_safe there was
-    // never a correction step to begin with — a local, safe, general-purpose
-    // glare-removal algorithm isn't a solved problem, so this mode only ever
-    // detects and flags for manual review.
+    // catalogue_safe — the whole point of the default mode: segmentation
+    // runs directly on the ORIGINAL photo's own pixels, never on a
+    // generative model's regenerated output.
+    const cutoutBuffer = await removeBackgroundLocal(originalBuffer);
+
+    // Reflection: detection only, always local/free, never an OpenAI call —
+    // a local, safe, general-purpose glare-removal algorithm isn't a solved
+    // problem, so this mode only ever detects and flags for manual review.
     let reflectionNote: string | undefined;
     const reflectionMode: ReflectionMode = opts.reflectionMode ?? "auto";
     if (reflectionMode !== "off") {
       const reflection = await analyzeReflection(cutoutBuffer);
       if (reflection.detected) {
-        reflectionNote =
-          mode === "ai_edit"
-            ? `Possible residual reflection/glare detected (~${reflection.hotspotPercent}% of frame) after AI editing — review closely`
-            : `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — AI Edit mode attempts to reduce this, Catalogue Safe only flags it`;
+        reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame)`;
       }
     }
 
@@ -352,7 +372,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
     version.masterImageUrl = masterUpload.url;
     version.productImageUrl = productUpload.url;
     version.thumbnailImageUrl = thumbnailUpload.url;
-    version.processingModel = processingModel;
+    version.processingModel = "local-segmentation";
     version.processingSettings = merged as unknown as Record<string, unknown>;
     version.isActive = true;
     await version.save();

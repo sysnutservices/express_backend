@@ -1,13 +1,13 @@
 # AI product-image editing (`ai_edit` mode)
 
-This directory is the new prompt/editing system for `ai_edit` mode — the
+This directory is the prompt/editing system for `ai_edit` mode — the
 explicit, opt-in alternative to the default `catalogue_safe` pipeline (real
 local segmentation, no OpenAI, never touches product pixels — see the
 comment at the top of `../productImageOrchestrator.ts`). `ai_edit` is for
 photos `catalogue_safe` can't clean up well enough on its own (messy
-backgrounds, real reflections, uneven lighting) — it costs money, can alter
-product pixels, and always lands in `READY_FOR_REVIEW` for manual approval,
-never auto-published.
+backgrounds, real reflections, uneven lighting, dust/smudges) — it costs
+money, can alter product pixels, and always lands in `READY_FOR_REVIEW` for
+manual approval, never auto-published.
 
 ## Configuring `OPENAI_API_KEY`
 
@@ -22,7 +22,7 @@ Admins can also set/rotate it from **Admin → Settings → AI Settings**, which
 writes to the same `.env` file server-side (`aiSettingsController.ts` +
 `utils/envFile.ts`) and never echoes the key back to the browser.
 
-## How an `ai_edit` request works
+## How an `ai_edit` request works (v2.0 architecture)
 
 1. Admin picks a product image slot, a `viewType`, and mode `ai_edit` in the
    **AI Ecommerce Images** workflow (`ProductImageWorkflow.tsx`) and clicks
@@ -36,36 +36,48 @@ writes to the same `.env` file server-side (`aiSettingsController.ts` +
      upper-center region (a coarse signal, not a real vision classifier).
    - `productImagePrompts.buildProductImagePrompt()` returns the shared
      `MASTER_PROMPT` plus one short, type-specific addition.
-   - `computeEditSize()` picks an edit canvas matching the source photo's own
-     aspect ratio (capped at 1536px, min 512px) — never a forced square; see
-     the comment at the top of `productImageEditor.ts` for the live failure
-     (a rotated, geometry-broken result) that made this non-negotiable.
-   - `buildPreserveMask()` runs the SAME local segmentation (IS-Net) that
-     `catalogue_safe` uses — *before* the OpenAI call this time — and turns
-     its alpha silhouette into an OpenAI edit mask: opaque = preserve
-     exactly, transparent = free for the model to regenerate. This is what
-     actually protects product pixels now, not the prompt.
    - `openaiClient.editImage()` calls `openai.images.edit` with
-     `model: "gpt-image-2"`, the real photo, that mask, the edit-size canvas,
-     and the prompt. One call per attempt.
-   - `verifyMaskRespected()` checks the result's masked (preserved) region
-     against the source — if OpenAI altered it anyway (mask compliance for
-     gpt-image-2 specifically isn't confirmed by anything but this runtime
-     check), that's a `MaskViolationError`; combined with the existing
-     `GeometryMismatchError` (orientation changed), up to 2 retries fire only
-     for these or transient errors (429/5xx/timeout) — never for invalid
-     input or content-policy rejections.
-4. The orchestrator re-runs the *same* local segmentation again on OpenAI's
-   output — OpenAI's own transparency, if any, is never trusted — to get a
-   robust alpha/bounding box for compositing (a second, independent run from
-   the pre-edit mask above; the mask protects pixels during generation, this
-   one drives the actual cutout), then Sharp composites the transparent
-   master, the white ecommerce derivative, and the 2000/1200/500 catalogue
-   sizes exactly as `catalogue_safe` does. OpenAI is never called again for
-   any of those derivative sizes.
-5. A local reflection check (`imageProcessing.analyzeReflection`) flags any
-   residual glare in `qualityWarning` — informational only, never blocks
-   approval.
+     `model: "gpt-image-2"`, the ORIGINAL photo at full resolution
+     (unresized, uncropped), that prompt, `size: "1024x1024"`, and
+     `quality: "high"`. One call per attempt, up to 2 retries only for
+     transient errors (429/5xx/timeout — never for invalid input or
+     content-policy rejections).
+4. **gpt-image-2's own 1024x1024 output IS the final product image.** The
+   orchestrator uploads it directly as `masterImageUrl`, and Sharp only
+   derives the smaller `productImageUrl`/`thumbnailImageUrl` catalogue sizes
+   by resizing those exact pixels (`generateVariants`) — never a second,
+   independently-generated or recomposed image. No local segmentation runs
+   on the AI output; there is no cutout and no transparent master for an
+   `ai_edit` result (`cutoutImageUrl`/`transparentMasterUrl` stay `null` —
+   the admin UI already treats `transparentMasterUrl` as optional).
+
+### Why no mask, why no local segmentation before or after the OpenAI call
+
+An earlier version (v1.2) built a hard OpenAI edit mask from local
+segmentation — opaque over the product, transparent over the background —
+and ran local segmentation again on the OpenAI output for the Sharp
+recompose step. Both are gone as of v2.0:
+
+- **The mask blocked the beautification this pipeline exists to do.**
+  "Opaque = preserve exactly" also means "brightness/glare/dust cleanup
+  cannot touch that pixel" — the mask and the feature request were in direct
+  conflict.
+- **It didn't even reliably work.** A live test against gpt-image-2 (not
+  `dall-e-2`, whose edit endpoint this mask behavior comes from) showed it
+  changed pixels inside the "preserved" region anyway — including the
+  on-screen taskbar clock/date — despite the mask marking that region
+  protected. The mask bought partial safety at the cost of the feature
+  actually working, for a guarantee gpt-image-2 didn't fully honor.
+- **Local segmentation of the AI output only existed to feed the mask-era
+  Sharp recompose step.** With gpt-image-2's own 1024x1024 output now being
+  the final image directly, there's nothing left to segment or recompose.
+
+Product identity is carried by the prompt alone now (same as v1.1) —
+"Preserve the exact physical identity of this laptop," explicit preservation
+lists for chassis/keyboard/ports/logos/etc., "PRODUCT IDENTITY HAS PRIORITY
+OVER BEAUTIFICATION." Nothing in code enforces this at runtime. **Manual
+review before publish is the actual safeguard** — every `ai_edit` result
+lands in `READY_FOR_REVIEW`, never auto-published, by design.
 
 ## Supported image formats & validation
 
@@ -73,18 +85,21 @@ writes to the same `.env` file server-side (`aiSettingsController.ts` +
 `image/*` MIME types via `multer`'s file filter in `productController.ts`'s
 `upload` config; HEIC gets converted client-side first
 (`lib/convertHeic.ts`). There's no separate upload path for `ai_edit` — it
-always reads the same stored original.
+always reads the same stored original, at its full original resolution (the
+browser must not send a downscaled preview).
 
 ## Prompt architecture
 
 - `productImageTypes.ts` — the `ProductImageType` taxonomy and
   `detectImageType()`.
-- `productImagePrompts.ts` — `MASTER_PROMPT` (shared, non-negotiable
-  preservation rules) + one short addition per image type +
-  `PRODUCT_IMAGE_PROMPT_VERSION`.
+- `productImagePrompts.ts` — `MASTER_PROMPT` (shared preservation +
+  transformation rules, including the 1024x1024 studio-composition
+  instructions GPT now owns) + one short SCREEN RULE addition per image type
+  + `PRODUCT_IMAGE_PROMPT_VERSION`.
 - `productImageEditor.ts` — the one function (`editProductImage`) that ties
-  detection + prompt + the OpenAI call together. Nothing else should call
-  `openaiClient.editImage` directly for product photos.
+  detection + prompt + the OpenAI call together, and returns gpt-image-2's
+  buffer as the result. Nothing else should call `openaiClient.editImage`
+  directly for product photos.
 - `../openaiClient.ts` — generic OpenAI plumbing (client singleton,
   `testConnection`, `classifyOpenAIError`, the raw `editImage` call) with no
   product-specific knowledge, reusable if another feature ever needs OpenAI.
@@ -93,50 +108,4 @@ always reads the same stored original.
 
 1. Add the value to `ProductImageType` in `productImageTypes.ts`.
 2. Map any relevant `ProductViewType`(s) to it in `VIEW_TYPE_TO_BASE`.
-3. Add its short addition to `IMAGE_TYPE_ADDITIONS` in `productImagePrompts.
-   ts` — narrow and specific, never contradicting `MASTER_PROMPT`.
-4. Bump `PRODUCT_IMAGE_PROMPT_VERSION` (see below) and add a
-   `productImagePrompts.selftest.ts` assertion for it.
-
-### Updating prompt versions
-
-Bump `PRODUCT_IMAGE_PROMPT_VERSION` (`"v1.0"` → `"v1.1"` → `"v2.0"`, your
-call) whenever `MASTER_PROMPT` or any per-type addition changes. It feeds
-`imageCostControl.computeProcessingHash`, so a version bump makes old
-generations ineligible for fingerprint reuse — a fresh viewType+mode
-combination always re-runs against the new prompt instead of silently
-reusing a result the new wording would have produced differently.
-
-## Storage & version history
-
-Reuses the project's existing ImageKit + `ProductImage` Mongoose model —
-nothing new was introduced here. Every attempt (success or failure) is one
-`ProductImage` document (`rootImageId` set, `version` incremented):
-`originalImageUrl`/`originalImageHash` (denormalized from the root, never
-reassigned — the original is never overwritten), `cutoutImageUrl`,
-`transparentMasterUrl`, `masterImageUrl`/`productImageUrl`/
-`thumbnailImageUrl`, `processingModel`, `processingSettings`,
-`processingHash`, `promptVersion`, `processingConfigVersion`, `status`,
-`qualityWarning`, `rejectionReason`. `ImageProcessingUsage` (`services/
-imageCostControl.ts`) logs one row per OpenAI attempt: model, status,
-duration, estimated cost — never the image bytes themselves.
-
-## Error handling
-
-`OrchestratorError` carries a typed `code` (`AI_DISABLED`, `MONTHLY_BUDGET`,
-`DAILY_LIMIT`, `HOURLY_LIMIT`, `OPENAI_FAILED`, ...) that
-`productImageController.mapOrchestratorError` turns into the right HTTP
-status and a clean, generic message — no stack traces or provider error
-text reach the client. Budget/rate-limit checks run *before* the OpenAI call
-(`imageCostControl.checkBudgetAndLimits`); a failed attempt still gets its
-own `ImageProcessingUsage` row (money can be spent on a failed call).
-
-## Duplicate-generation protection
-
-A partial unique Mongo index on `{rootImageId, processingHash, status:
-"PROCESSING"}` means a second rapid click for the same
-original+viewType+mode+prompt-version hits `E11000` instead of starting a
-second OpenAI call — the orchestrator catches that and returns the
-already-in-flight document instead. A fingerprint that already produced a
-`READY_FOR_REVIEW`/`APPROVED`/`PUBLISHED` result is reused via a Sharp-only
-recompute (`recomposeVersion`) instead of calling OpenAI again.
+3. Add its short addition to `IMAGE_TYPE_ADDITIONS` in `productImagePrompts.ts`.
