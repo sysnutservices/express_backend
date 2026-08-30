@@ -180,6 +180,52 @@ export function largestComponentMask(binary: Uint8Array, width: number, height: 
   return keep;
 }
 
+// Flood-fills any 0-valued region of `binary` that is NOT reachable from the
+// image border — i.e. holes fully enclosed by the kept silhouette. Exists
+// because the segmentation model has a "salient subject" bias: vivid,
+// detailed on-screen content (a rendered face or character) can score higher
+// as its own subject than the surrounding screen, so the model excludes
+// large legitimate patches of the laptop's own display (confirmed live: a
+// wallpaper's face was kept, the rest of that same screen was not). A real
+// laptop never has an actual hole through its middle showing background —
+// so any enclosed low-confidence patch inside the product's own silhouette
+// is product, regardless of the model's per-pixel confidence there.
+export function fillEnclosedHoles(binary: Uint8Array, width: number, height: number): Uint8Array {
+  const reachableFromBorder = new Uint8Array(width * height);
+  const queue = new Int32Array(width * height);
+  let qHead = 0,
+    qTail = 0;
+
+  const tryPush = (idx: number) => {
+    if (binary[idx] === 0 && !reachableFromBorder[idx]) {
+      reachableFromBorder[idx] = 1;
+      queue[qTail++] = idx;
+    }
+  };
+  for (let x = 0; x < width; x++) {
+    tryPush(x);
+    tryPush((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    tryPush(y * width);
+    tryPush(y * width + width - 1);
+  }
+
+  while (qHead < qTail) {
+    const p = queue[qHead++];
+    const x = p % width,
+      y = (p / width) | 0;
+    if (x > 0) tryPush(p - 1);
+    if (x < width - 1) tryPush(p + 1);
+    if (y > 0) tryPush(p - width);
+    if (y < height - 1) tryPush(p + width);
+  }
+
+  const filled = new Uint8Array(width * height);
+  for (let i = 0; i < width * height; i++) filled[i] = binary[i] || !reachableFromBorder[i] ? 1 : 0;
+  return filled;
+}
+
 // Separable box max/min filter — sharp 0.33 has no dilate()/erode(), this is
 // a standard cheap approximation of disk-shaped morphology for a small radius.
 export function boxMorph(src: Uint8Array, width: number, height: number, radius: number, isMax: boolean): Uint8Array {
@@ -251,9 +297,34 @@ export async function removeBackgroundLocal(inputBuffer: Buffer): Promise<Buffer
   const binary = new Uint8Array(pixelCount);
   for (let i = 0; i < pixelCount; i++) binary[i] = smallMask[i] > CCL_SEED_THRESHOLD ? 1 : 0;
   const keep = largestComponentMask(binary, INPUT_SIZE, INPUT_SIZE);
+  const filled = fillEnclosedHoles(keep, INPUT_SIZE, INPUT_SIZE);
 
   const cleanedSmallMask = new Uint8Array(pixelCount);
-  for (let i = 0; i < pixelCount; i++) cleanedSmallMask[i] = keep[i] ? smallMask[i] : 0;
+  for (let i = 0; i < pixelCount; i++) {
+    // A hole the fill step added (filled but not in the model's own kept
+    // region) is trusted at full confidence — the model's raw score there is
+    // exactly what got it excluded in the first place, so re-using it here
+    // would undo the fill.
+    if (filled[i] && !keep[i]) cleanedSmallMask[i] = 255;
+    else cleanedSmallMask[i] = keep[i] ? smallMask[i] : 0;
+  }
+
+  // Opening (erode then dilate) strips thin protrusions that survived the
+  // largest-component filter only because they touch the product's true
+  // silhouette in the downsampled 1024x1024 mask — confirmed live: a studio
+  // backdrop's text sitting just above a laptop's lid was close enough to
+  // merge into the very same connected component the model produced, before
+  // any closing/notch-fill step ever ran. The laptop's own bulk is far
+  // thicker than OPEN_RADIUS and survives erosion intact; a background
+  // speck a few pixels wide does not survive to be dilated back.
+  const OPEN_RADIUS = 4;
+  const binaryForOpen = new Uint8Array(pixelCount);
+  for (let i = 0; i < pixelCount; i++) binaryForOpen[i] = cleanedSmallMask[i] > 100 ? 255 : 0;
+  const eroded = boxMorph(binaryForOpen, INPUT_SIZE, INPUT_SIZE, OPEN_RADIUS, false);
+  const opened = boxMorph(eroded, INPUT_SIZE, INPUT_SIZE, OPEN_RADIUS, true);
+  for (let i = 0; i < pixelCount; i++) {
+    if (opened[i] === 0) cleanedSmallMask[i] = 0;
+  }
 
   const binaryForMorph = new Uint8Array(pixelCount);
   for (let i = 0; i < pixelCount; i++) binaryForMorph[i] = cleanedSmallMask[i] > 100 ? 255 : 0;

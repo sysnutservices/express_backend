@@ -15,7 +15,7 @@
 // a real photo and, here, a 178MB model download.
 // Run: npx ts-node src/services/localSegmentation.selftest.ts (or `npm test`)
 import assert from "assert";
-import { computeBBoxFromMask, largestComponentMask, boxMorph, computeAlphaStats } from "./localSegmentation";
+import { computeBBoxFromMask, largestComponentMask, boxMorph, computeAlphaStats, fillEnclosedHoles } from "./localSegmentation";
 
 function main() {
   const W = 10,
@@ -72,6 +72,25 @@ function main() {
   const allForeground = new Uint8Array(100).fill(255);
   const failedStats = computeAlphaStats(allForeground);
   assert.strictEqual(failedStats.alphaMin, failedStats.alphaMax, "a uniform mask must be detectable as a failed segmentation");
+
+  // 6. fillEnclosedHoles: a hole fully enclosed by the foreground (like a
+  //    laptop screen's own dark wallpaper content the model didn't
+  //    recognize) gets filled in; open background touching the image border
+  //    never does, even if it pokes deep into the shape's bounding box.
+  const ring = new Uint8Array(W * H);
+  for (let y = 1; y < 9; y++) for (let x = 1; x < 9; x++) ring[y * W + x] = 1; // solid 8x8 block
+  ring[5 * W + 5] = 0; // one enclosed hole in the middle
+  const filledRing = fillEnclosedHoles(ring, W, H);
+  assert.strictEqual(filledRing[5 * W + 5], 1, "enclosed hole must be filled");
+  assert.strictEqual(filledRing[0 * W + 0], 0, "true background touching the border must stay background");
+
+  const notch = new Uint8Array(W * H);
+  for (let y = 1; y < 9; y++) for (let x = 1; x < 9; x++) notch[y * W + x] = 1;
+  for (let y = 1; y < 9; y++) notch[y * W + 1] = 0; // a notch open to the border via row 0 is NOT enclosed...
+  // ...only if it actually connects to the border; make it explicitly reach y=0:
+  notch[0 * W + 1] = 0;
+  const filledNotch = fillEnclosedHoles(notch, W, H);
+  assert.strictEqual(filledNotch[5 * W + 1], 0, "a notch open to the border must not be filled");
 
   console.log("localSegmentation.selftest: all assertions passed");
 }
