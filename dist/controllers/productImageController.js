@@ -27,6 +27,13 @@ exports.uploadOriginalMiddleware = productController_1.upload.single("image");
 function resolveViewType(raw) {
     return typeof raw === "string" && raw in imageProcessing_1.VIEW_PRESETS ? raw : "custom";
 }
+// Always explicit, never inferred — an unrecognized/missing value falls
+// back to the configured default (catalogue_safe unless the deployment set
+// IMAGE_PROCESSING_MODE=ai_edit), it never silently becomes ai_edit just
+// because the field was present but malformed.
+function resolveMode(raw) {
+    return raw === "catalogue_safe" || raw === "ai_edit" ? raw : productImageOrchestrator_1.DEFAULT_PROCESSING_MODE;
+}
 function errorResponse(res, err) {
     if (err instanceof productImageOrchestrator_1.OrchestratorError) {
         const { status, message } = mapOrchestratorError(err.code);
@@ -179,6 +186,7 @@ function serializeRoot(root, versions) {
                 isActive: version.isActive,
                 isApproved: version.isApproved,
                 isPublished: version.isPublished,
+                transparentMasterUrl: version.transparentMasterUrl,
                 masterImageUrl: version.masterImageUrl,
                 productImageUrl: version.productImageUrl,
                 thumbnailImageUrl: version.thumbnailImageUrl,
@@ -186,6 +194,7 @@ function serializeRoot(root, versions) {
                 processingSettings: version.processingSettings,
                 rejectionReason: version.rejectionReason,
                 qualityWarning: version.qualityWarning,
+                occupancyPercent: version.occupancyPercent,
                 approvedAt: version.approvedAt,
                 publishedAt: version.publishedAt,
                 createdAt: version.createdAt,
@@ -199,14 +208,16 @@ function serializeRoot(root, versions) {
 // productImageOrchestrator.createEcommerceImage for why one endpoint for
 // both is what guarantees reprocess-always-from-original.
 const processRootImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a, _b, _c;
     try {
         const viewType = resolveViewType(req.body.viewType);
         const settings = (0, imageSettingsValidation_1.sanitizeSettings)(req.body.settings);
+        const mode = resolveMode(req.body.mode);
         const version = yield (0, productImageOrchestrator_1.createEcommerceImage)({
             rootImageId: req.params.rootImageId,
             viewType,
             settings,
+            mode,
             initiatedBy: ((_a = req.user) === null || _a === void 0 ? void 0 : _a._id) ? String(req.user._id) : null,
         });
         res.json({
@@ -215,10 +226,13 @@ const processRootImage = (req, res) => __awaiter(void 0, void 0, void 0, functio
                 id: String(version._id),
                 status: version.status,
                 viewType: version.viewType,
+                processingModel: version.processingModel,
+                transparentUrl: version.transparentMasterUrl,
                 masterUrl: version.masterImageUrl,
                 processedUrl: version.productImageUrl,
                 thumbnailUrl: version.thumbnailImageUrl,
                 qualityWarning: (_b = version.qualityWarning) !== null && _b !== void 0 ? _b : null,
+                occupancyPercent: (_c = version.occupancyPercent) !== null && _c !== void 0 ? _c : null,
             },
         });
     }
@@ -230,7 +244,7 @@ exports.processRootImage = processRootImage;
 // Sharp-only recompute (scale/position/brightness/contrast/shadow/etc) — no
 // OpenAI call, for the settings panel's live preview (Phase 25A #4/#6).
 const updateVersionSettings = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
+    var _a, _b, _c;
     try {
         const settings = (0, imageSettingsValidation_1.sanitizeSettings)((_a = req.body.settings) !== null && _a !== void 0 ? _a : req.body);
         const version = yield (0, productImageOrchestrator_1.recomposeVersion)(req.params.versionId, settings);
@@ -239,10 +253,12 @@ const updateVersionSettings = (req, res) => __awaiter(void 0, void 0, void 0, fu
             image: {
                 id: String(version._id),
                 status: version.status,
+                transparentUrl: version.transparentMasterUrl,
                 masterUrl: version.masterImageUrl,
                 processedUrl: version.productImageUrl,
                 thumbnailUrl: version.thumbnailImageUrl,
                 qualityWarning: (_b = version.qualityWarning) !== null && _b !== void 0 ? _b : null,
+                occupancyPercent: (_c = version.occupancyPercent) !== null && _c !== void 0 ? _c : null,
             },
         });
     }

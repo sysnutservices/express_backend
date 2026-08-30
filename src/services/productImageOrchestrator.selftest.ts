@@ -4,29 +4,27 @@
 //
 // NOTE — scope: this project has one shared MongoDB (no disposable test
 // database — see lapshark_backend/src/config/db.ts, single MONGO_URI), so
-// the full stateful invariants (one-OpenAI-call-per-operation, fingerprint
-// reuse suppresses a second call, reprocess always uses the original bytes
-// not a prior version's output, original URL/hash never mutate) are NOT
-// exercised here with a mocked DB — doing so would mean either adding a new
-// in-memory-Mongo dependency for one test file, or writing/deleting rows
-// against the real shared database from an automated test, both rejected as
-// disproportionate/risky for this codebase. Those invariants are structural
-// in createEcommerceImage's implementation instead (it always reads
-// root.originalImageUrl/originalImageHash, never a version's output; it
-// looks up an existing READY_FOR_REVIEW/APPROVED/PUBLISHED version by
-// processingHash before calling OpenAI; it never reassigns
-// root.originalImageUrl/originalImageHash after creation) and were verified
-// manually.
+// the full stateful invariants (one-segmentation-run-per-operation,
+// fingerprint reuse suppresses a second run, reprocess always uses the
+// original bytes not a prior version's output, original URL/hash never
+// mutate) are NOT exercised here with a mocked DB — doing so would mean
+// either adding a new in-memory-Mongo dependency for one test file, or
+// writing/deleting rows against the real shared database from an automated
+// test, both rejected as disproportionate/risky for this codebase. Those
+// invariants are structural in createEcommerceImage's implementation
+// instead (it always reads root.originalImageUrl/originalImageHash, never a
+// version's output; it looks up an existing
+// READY_FOR_REVIEW/APPROVED/PUBLISHED version by processingHash before
+// running segmentation; it never reassigns root.originalImageUrl/
+// originalImageHash after creation) and were verified manually.
 // Run: npx ts-node src/services/productImageOrchestrator.selftest.ts (or `npm test`)
 import assert from "assert";
-import { OrchestratorError, budgetLimitMessage, MAX_ATTEMPTS } from "./productImageOrchestrator";
+import { OrchestratorError, budgetLimitMessage } from "./productImageOrchestrator";
 
 function main() {
-  // 1. Retry budget: 1 initial attempt + 2 retries (Phase 25A #21's "maximum
-  //    automatic retries: 2").
-  assert.strictEqual(MAX_ATTEMPTS, 3);
-
-  // 2. Every budget/limit rejection maps to the spec's exact user-facing text.
+  // 1. Every budget/limit rejection maps to the spec's exact user-facing
+  //    text (kept for any future OpenAI-backed path; the default local-
+  //    segmentation pipeline doesn't hit these — no cost, nothing to budget).
   assert.strictEqual(budgetLimitMessage("AI_DISABLED"), "AI image processing is temporarily disabled.");
   assert.strictEqual(budgetLimitMessage("MONTHLY_BUDGET"), "Monthly image processing budget has been reached.");
   assert.ok(budgetLimitMessage("DAILY_LIMIT").toLowerCase().includes("daily"));

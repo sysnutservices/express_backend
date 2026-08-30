@@ -32,7 +32,7 @@ export interface IProductImage extends Document {
 
   viewType: ProductViewType;
   status: ImageStatus;
-  version: number; // 0 = original/root; 1..n = real OpenAI generations only
+  version: number; // 0 = original/root; 1..n = real processing attempts only
 
   isActive: boolean;
   isApproved: boolean;
@@ -45,10 +45,12 @@ export interface IProductImage extends Document {
   originalImageUrl: string | null;
   originalImageHash: string | null;
 
-  aiEditedImageUrl: string | null; // raw OpenAI output, cached for Sharp-only recompute
-  masterImageUrl: string | null; // 2000x2000
+  cutoutImageUrl: string | null; // segmented product cutout (IS-Net), cached for Sharp-only recompute
+  transparentMasterUrl: string | null; // 2000x2000 transparent PNG — the canonical master
+  masterImageUrl: string | null; // 2000x2000, white background
   productImageUrl: string | null; // 1200x1200
   thumbnailImageUrl: string | null; // 500x500
+  occupancyPercent: number | null; // product's share of the canvas, for the admin preview readout
 
   processingModel: string | null;
   processingSettings: Record<string, unknown> | null;
@@ -86,10 +88,12 @@ const ProductImageSchema: Schema<IProductImage> = new Schema(
     originalImageUrl: { type: String, default: null },
     originalImageHash: { type: String, default: null },
 
-    aiEditedImageUrl: { type: String, default: null },
+    cutoutImageUrl: { type: String, default: null },
+    transparentMasterUrl: { type: String, default: null },
     masterImageUrl: { type: String, default: null },
     productImageUrl: { type: String, default: null },
     thumbnailImageUrl: { type: String, default: null },
+    occupancyPercent: { type: Number, default: null },
 
     processingModel: { type: String, default: null },
     processingSettings: { type: Schema.Types.Mixed, default: null },

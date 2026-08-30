@@ -22,8 +22,6 @@ const imagekit_1 = require("../services/imagekit");
 const sharp_1 = __importDefault(require("sharp"));
 const imageProcessing_1 = require("../services/imageProcessing");
 const imageSettingsValidation_1 = require("../utils/imageSettingsValidation");
-const openaiImageService_1 = require("../services/openaiImageService");
-const imageCostControl_1 = require("../services/imageCostControl");
 const localSegmentation_1 = require("../services/localSegmentation");
 // Configure multer storage
 // const storage = multer.diskStorage({
@@ -353,19 +351,16 @@ const deleteProduct = (req, res) => __awaiter(void 0, void 0, void 0, function* 
 });
 exports.deleteProduct = deleteProduct;
 // Runs a picked file (or an already-hosted image, for reprocessing) through
-// OpenAI GPT Image 2 + view-preset-driven Sharp compositing, then uploads
-// the result to ImageKit. Called by the admin form the instant an image is
-// picked, before the product itself is saved — the returned URL is what
-// createProduct/updateProduct receive via imageUrl/imageUrls.
+// local IS-Net segmentation + view-preset-driven Sharp compositing, then
+// uploads the result to ImageKit. Called by the admin form the instant an
+// image is picked, before the product itself is saved — the returned URL is
+// what createProduct/updateProduct receive via imageUrl/imageUrls.
 //
-// No productId/ProductImage exists yet at this point in the flow, so usage
-// is recorded with null product references (still counts toward the
-// budget/rate limits — see ImageProcessingUsage's productId comment) and
-// there's no fingerprint-reuse or version history here, only a single
-// attempt per call; the existing admin form's own "Retry" button already
-// covers manual retry on failure.
+// No productId/ProductImage exists yet at this point in the flow, so there's
+// no fingerprint-reuse or version history here, only a single attempt per
+// call; the existing admin form's own "Retry" button already covers manual
+// retry on failure. No OpenAI involved, so no cost/budget concerns either.
 const processImage = (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    var _a, _b;
     try {
         let inputBuffer;
         let mimeType;
@@ -389,79 +384,18 @@ const processImage = (req, res) => __awaiter(void 0, void 0, void 0, function* (
         try {
             yield (0, sharp_1.default)(inputBuffer).metadata();
         }
-        catch (_c) {
+        catch (_a) {
             return res.status(400).json({ message: 'Invalid or unsupported image' });
         }
         const viewType = req.body.viewType in imageProcessing_1.VIEW_PRESETS ? req.body.viewType : 'custom';
         const settings = (0, imageSettingsValidation_1.sanitizeSettings)(req.body.settings);
-        const budgetCheck = yield (0, imageCostControl_1.checkBudgetAndLimits)((0, imageCostControl_1.estimateCost)(null).amountUsd);
-        if (!budgetCheck.allowed) {
-            const status = budgetCheck.reason === 'AI_DISABLED' ? 503 : budgetCheck.reason === 'MONTHLY_BUDGET' ? 402 : 429;
-            const messages = {
-                AI_DISABLED: 'AI image processing is temporarily disabled.',
-                MONTHLY_BUDGET: 'Monthly image processing budget has been reached.',
-                DAILY_LIMIT: 'Daily image processing limit reached, try again later.',
-                HOURLY_LIMIT: 'Hourly image processing limit reached, try again later.',
-            };
-            return res.status(status).json({ message: messages[budgetCheck.reason] });
-        }
-        const prompt = (0, openaiImageService_1.buildLapsharkImagePrompt)({ viewType });
-        const initiatedBy = (_b = (_a = req.user) === null || _a === void 0 ? void 0 : _a._id) !== null && _b !== void 0 ? _b : null;
-        const attemptStart = Date.now();
-        let edited;
-        try {
-            edited = yield (0, openaiImageService_1.generateEcommerceEdit)(inputBuffer, mimeType, prompt);
-            const cost = (0, imageCostControl_1.estimateCost)(edited.usage);
-            yield (0, imageCostControl_1.recordUsage)({
-                productId: null,
-                productImageId: null,
-                imageVersionId: null,
-                operation: 'create',
-                aiModel: 'gpt-image-2',
-                originalImageHash: null,
-                processingHash: null,
-                promptVersion: openaiImageService_1.IMAGE_PROMPT_VERSION,
-                processingConfigVersion: imageProcessing_1.PROCESSING_CONFIG_VERSION,
-                status: 'success',
-                inputUsage: edited.usage,
-                outputUsage: edited.usage,
-                totalUsage: edited.usage,
-                estimatedCost: cost.amountUsd,
-                estimatedCostIsApproximate: cost.approximate,
-                durationMs: Date.now() - attemptStart,
-                initiatedBy,
-            });
-        }
-        catch (err) {
-            const classified = (0, openaiImageService_1.classifyOpenAIError)(err);
-            yield (0, imageCostControl_1.recordUsage)({
-                productId: null,
-                productImageId: null,
-                imageVersionId: null,
-                operation: 'create',
-                aiModel: 'gpt-image-2',
-                originalImageHash: null,
-                processingHash: null,
-                promptVersion: openaiImageService_1.IMAGE_PROMPT_VERSION,
-                processingConfigVersion: imageProcessing_1.PROCESSING_CONFIG_VERSION,
-                status: classified.transient ? 'error_transient' : 'error_permanent',
-                inputUsage: null,
-                outputUsage: null,
-                totalUsage: null,
-                estimatedCost: null,
-                estimatedCostIsApproximate: true,
-                durationMs: Date.now() - attemptStart,
-                errorMessage: classified.message.slice(0, 500),
-                initiatedBy,
-            });
-            throw new Error('AI image editing failed');
-        }
-        // Tight, robust bounding-box crop (IS-Net) before composition — OpenAI's
-        // edit doesn't determine final geometry, Sharp does, from this bbox.
-        const cutoutBuffer = yield (0, localSegmentation_1.removeBackgroundLocal)(edited.buffer);
+        // Segmentation runs directly on the picked photo's own pixels — no
+        // generative model involved, no cost, nothing to budget/rate-limit.
+        const cutoutBuffer = yield (0, localSegmentation_1.removeBackgroundLocal)(inputBuffer);
         const merged = (0, imageProcessing_1.resolveViewSettings)(viewType, settings);
         const studioSettings = (0, imageProcessing_1.viewPresetToStudioSettings)(merged);
-        const masterBuffer = yield (0, imageProcessing_1.composeStudioImage)(cutoutBuffer, studioSettings);
+        const transparentMaster = yield (0, imageProcessing_1.composeStudioImage)(cutoutBuffer, Object.assign(Object.assign({}, studioSettings), { background: 'transparent', outputFormat: 'png' }));
+        const masterBuffer = yield (0, imageProcessing_1.flattenMasterToWhite)(transparentMaster, studioSettings.outputFormat, studioSettings.quality);
         const variants = yield (0, imageProcessing_1.generateVariants)(masterBuffer);
         // No product title exists yet at this stage (image is processed before
         // Save) — fall back to the view type, still far more descriptive than a

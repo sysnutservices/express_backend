@@ -45,6 +45,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.computeAlphaStats = computeAlphaStats;
 exports.computeBBoxFromMask = computeBBoxFromMask;
 exports.largestComponentMask = largestComponentMask;
 exports.boxMorph = boxMorph;
@@ -123,6 +124,25 @@ function getSession() {
         }))();
     }
     return sessionPromise;
+}
+// Run on the FULL-FRAME mask, before any bbox crop trims the transparent
+// margin away — cropping is expected to leave little/no transparency in the
+// output (that's a tight, correct crop, not a failure), so validating after
+// crop would misread a good result as broken. alphaMax === alphaMin means
+// the model found either everything or nothing to be background: a real
+// segmentation, run on a real product photo, always produces a mix.
+function computeAlphaStats(alpha) {
+    let alphaMin = 255, alphaMax = 0, transparentCount = 0;
+    for (let i = 0; i < alpha.length; i++) {
+        const a = alpha[i];
+        if (a < alphaMin)
+            alphaMin = a;
+        if (a > alphaMax)
+            alphaMax = a;
+        if (a === 0)
+            transparentCount++;
+    }
+    return { alphaMin, alphaMax, transparentPercent: (transparentCount / alpha.length) * 100 };
 }
 function computeBBoxFromMask(mask, width, height, threshold) {
     let minX = width, maxX = -1, minY = height, maxY = -1;
@@ -294,6 +314,15 @@ function removeBackgroundLocal(inputBuffer) {
         const finalAlpha = Buffer.alloc(resizedMask.length);
         for (let i = 0; i < resizedMask.length; i++)
             finalAlpha[i] = resizedMask[i] > BBOX_THRESHOLD ? 255 : 0;
+        // Hard failure, not a soft warning — a mask with zero contrast means
+        // segmentation didn't actually run correctly on this photo, so nothing
+        // downstream can be trusted. computeBBoxFromMask below already throws for
+        // the all-background case (bbox null); this catches the other degenerate
+        // case it can't: everything read as foreground.
+        const alphaStats = computeAlphaStats(finalAlpha);
+        if (alphaStats.alphaMax === alphaStats.alphaMin) {
+            throw new Error(`BACKGROUND_REMOVAL_FAILED — no transparency detected (alphaMin=${alphaStats.alphaMin}, alphaMax=${alphaStats.alphaMax})`);
+        }
         const bbox = computeBBoxFromMask(finalAlpha, meta.width, meta.height, 127);
         if (!bbox)
             throw new Error("No product detected in image");

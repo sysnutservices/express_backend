@@ -7,18 +7,17 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // model inference (never downloads/loads the 178MB ONNX model, no network),
 // matching the codebase's no-framework, no-network selftest convention.
 //
-// localSegmentation.ts is currently unused by productImageOrchestrator.ts
-// (OpenAI GPT Image 2 is the sole pipeline again, by explicit decision — see
-// the note at the top of productImageOrchestrator.ts) but kept in place,
-// not deleted, in case that decision changes again. Its segmentation
-// quality (does it hallucinate product pixels? does it handle a cluttered
-// studio backdrop cleanly?) was verified manually against a real LapShark
-// product photo when it was adopted — see the connected-component-labeling
-// and morphological-closing comments in localSegmentation.ts for what that
-// testing found and fixed. Re-running that full benchmark isn't automated
-// here for the same reason imageProcessing.selftest.ts doesn't call the
-// real PhotoRoom API: it needs a real photo and, here, a 178MB model
-// download.
+// This is the sole default background-removal path (productImageOrchestrator.
+// createEcommerceImage and the legacy productController.processImage both run
+// it directly on the original photo — see the note at the top of
+// productImageOrchestrator.ts). Its segmentation quality (does it hallucinate
+// product pixels? does it handle a cluttered studio backdrop cleanly?) was
+// verified manually against a real LapShark product photo when it was
+// adopted — see the connected-component-labeling and morphological-closing
+// comments in localSegmentation.ts for what that testing found and fixed.
+// Re-running that full benchmark isn't automated here for the same reason
+// imageProcessing.selftest.ts doesn't call the real PhotoRoom API: it needs
+// a real photo and, here, a 178MB model download.
 // Run: npx ts-node src/services/localSegmentation.selftest.ts (or `npm test`)
 const assert_1 = __importDefault(require("assert"));
 const localSegmentation_1 = require("./localSegmentation");
@@ -60,6 +59,20 @@ function main() {
     assert_1.default.strictEqual(closed[2 * W + 5], 255, "closing should fill the small notch");
     // Far-away background pixels must still be background after closing.
     assert_1.default.strictEqual(closed[0 * W + 0], 0);
+    // 5. computeAlphaStats: a real (mixed) mask reports both bounds and a
+    //    plausible transparent share; a degenerate all-255 mask — the
+    //    BACKGROUND_REMOVAL_FAILED case, segmentation found no background at
+    //    all — reports alphaMin === alphaMax so removeBackgroundLocal can
+    //    detect it and refuse to proceed.
+    const mixedMask = new Uint8Array(100);
+    mixedMask.fill(255, 0, 60); // 60% foreground
+    const mixedStats = (0, localSegmentation_1.computeAlphaStats)(mixedMask);
+    assert_1.default.strictEqual(mixedStats.alphaMin, 0);
+    assert_1.default.strictEqual(mixedStats.alphaMax, 255);
+    assert_1.default.strictEqual(mixedStats.transparentPercent, 40);
+    const allForeground = new Uint8Array(100).fill(255);
+    const failedStats = (0, localSegmentation_1.computeAlphaStats)(allForeground);
+    assert_1.default.strictEqual(failedStats.alphaMin, failedStats.alphaMax, "a uniform mask must be detectable as a failed segmentation");
     console.log("localSegmentation.selftest: all assertions passed");
 }
 main();

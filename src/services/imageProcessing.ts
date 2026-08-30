@@ -110,21 +110,24 @@ export const DEFAULT_ENHANCEMENT: Pick<ViewPreset, "brightness" | "contrast" | "
 // Explicit per-view occupancy/position/shadow instead of one fixed
 // compact/standard/spacious padding for every angle. Tune freely per view —
 // nothing else in the pipeline depends on these specific numbers. Target
-// occupancy ranges: open front 86-90%, side/closed-lid/bottom 82-88% — these
+// occupancy: open front 88-92%, side 82-88%, closed-lid/bottom 82-90% — these
 // only set the SCALE the bbox-cropped product is resized to; how tight the
 // bbox itself is comes from localSegmentation.ts's crop, not these numbers.
+// Every view gets a subtle grounding shadow by default now (catalogue-style
+// reference images all have one); ENABLE_SHADOW=false in resolveViewSettings
+// below is the global kill switch if it's ever not wanted.
 export const VIEW_PRESETS: Record<ProductViewType, ViewPreset> = {
-  open_front: { scale: 0.88, position: "center-bottom", yOffset: -20, shadow: false },
-  open_angle: { scale: 0.87, position: "center", shadow: false },
-  closed_top: { scale: 0.88, position: "center", shadow: false },
-  closed_angle: { scale: 0.87, position: "center", shadow: false },
+  open_front: { scale: 0.90, position: "center-bottom", yOffset: -20, shadow: true },
+  open_angle: { scale: 0.88, position: "center", shadow: true },
+  closed_top: { scale: 0.86, position: "center", shadow: true },
+  closed_angle: { scale: 0.86, position: "center", shadow: true },
   closed_rear: { scale: 0.86, position: "center", shadow: true, shadowOffsetY: 18 },
-  bottom: { scale: 0.88, position: "center", shadow: false },
-  left_side: { scale: 0.87, position: "center", shadow: false },
-  right_side: { scale: 0.87, position: "center", shadow: false },
-  ports: { scale: 0.88, position: "center", shadow: false },
-  detail: { scale: 0.86, position: "center", shadow: false },
-  custom: { scale: 0.86, position: "center", shadow: false },
+  bottom: { scale: 0.86, position: "center", shadow: true },
+  left_side: { scale: 0.85, position: "center", shadow: true },
+  right_side: { scale: 0.85, position: "center", shadow: true },
+  ports: { scale: 0.86, position: "center", shadow: true },
+  detail: { scale: 0.86, position: "center", shadow: true },
+  custom: { scale: 0.86, position: "center", shadow: true },
 };
 
 export interface StudioSettings {
@@ -246,13 +249,20 @@ export function computePosition(
   };
 }
 
-// Conservative source-photo enhancement: auto-exposure normalize (always),
-// then optional brightness/saturation (sharp modulate), contrast (linear
-// stretch around the midpoint), and mild sharpening. Never touches hue or
-// geometry, so it can't alter the physical product — only how the photo of
-// it looks.
+// Conservative source-photo enhancement: optional brightness/saturation
+// (sharp modulate), contrast (linear stretch around the midpoint), and mild
+// sharpening — each a no-op unless a caller/preset actually sets it away
+// from 1. Never touches hue or geometry, so it can't alter the physical
+// product — only how the photo of it looks.
+//
+// Deliberately does NOT call sharp's normalize(): that stretches the
+// histogram to fill the full dynamic range, which can visibly shift a
+// silver chassis toward white or a black one toward grey — exactly the
+// color-fidelity risk this pipeline exists to avoid. Auto-exposure isn't
+// worth that risk; a manual brightness value stays available for a genuinely
+// dark source photo.
 async function applyEnhancement(buffer: Buffer, settings: StudioSettings): Promise<Buffer> {
-  let img = sharp(buffer).normalize();
+  let img = sharp(buffer);
 
   const brightness = settings.brightness ?? 1;
   const saturation = settings.saturation ?? 1;
@@ -326,7 +336,7 @@ async function renderStudioImage(cleanedBuffer: Buffer, settings: StudioSettings
     const shadowAlpha = await sharp(resizedProduct)
       .ensureAlpha()
       .extractChannel(3)
-      .linear(settings.shadowOpacity ?? 0.35, 0)
+      .linear(settings.shadowOpacity ?? 0.25, 0)
       .blur(shadowBlur)
       .toBuffer();
     const shadowLayer = await sharp({
@@ -371,11 +381,47 @@ export interface ProductImageVariants {
 
 const VARIANT_SIZES = { product: 1200, thumbnail: 500 } as const;
 
-// Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes),
-// as opposed to promptVersion which versions the OpenAI prompt text. Both
-// feed the processing fingerprint in imageCostControl.ts — bump this only
-// when a change here should invalidate cached/approved results.
-export const PROCESSING_CONFIG_VERSION = "v1";
+// Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes).
+// Feeds the processing fingerprint in imageCostControl.ts — bump this only
+// when a change here should invalidate cached/approved results. v2: dropped
+// auto-normalize, retuned occupancy/shadow (see VIEW_PRESETS/applyEnhancement).
+export const PROCESSING_CONFIG_VERSION = "v2";
+
+// Derives the opaque white-background ecommerce version from an already-
+// composed transparent master — a flatten + format convert, not a
+// re-composite, so the two versions stay pixel-identical everywhere but the
+// background (the white one is never a second, independently-generated
+// image).
+export async function flattenMasterToWhite(
+  transparentMasterBuffer: Buffer,
+  outputFormat: StudioSettings["outputFormat"] = "webp",
+  quality = 92
+): Promise<Buffer> {
+  const img = sharp(transparentMasterBuffer).flatten({ background: "#ffffff" });
+  switch (outputFormat) {
+    case "jpeg":
+      return img.jpeg({ quality }).toBuffer();
+    case "png":
+      return img.png().toBuffer();
+    default:
+      return img.webp({ quality }).toBuffer();
+  }
+}
+
+// How much of the canvas the product actually occupies, for the admin
+// preview's "Product occupancy: XX%" readout — display only, not a pass/fail
+// check (see validateMasterImage for that). Assumes a white-background
+// master, same as validateMasterImage's own occupancy check.
+export async function computeOccupancy(masterBuffer: Buffer): Promise<number> {
+  const meta = await sharp(masterBuffer).metadata();
+  const canvasSize = meta.width || MASTER_SIZE;
+  try {
+    const trimmed = await sharp(masterBuffer).trim({ background: "#ffffff", threshold: 10 }).toBuffer({ resolveWithObject: true });
+    return Math.round((Math.max(trimmed.info.width, trimmed.info.height) / canvasSize) * 100);
+  } catch {
+    return 0;
+  }
+}
 
 // Downscales the already-composited master into the catalogue's other two
 // sizes. No second PhotoRoom call and no re-compositing — same master pixels,
@@ -447,7 +493,14 @@ export async function validateMasterImage(masterBuffer: Buffer): Promise<string 
 // same resolution instead of duplicating it.
 export function resolveViewSettings(viewType: ProductViewType, settings?: Partial<ViewPreset>): ViewPreset {
   const preset = VIEW_PRESETS[viewType] ?? VIEW_PRESETS.custom;
-  return { ...DEFAULT_ENHANCEMENT, ...preset, ...settings };
+  const merged = { ...DEFAULT_ENHANCEMENT, ...preset, ...settings };
+  // Global kill switch — only when the caller didn't already pass an
+  // explicit shadow value of their own (e.g. the settings panel's live
+  // preview toggle), matching how every other 3-way merge here works.
+  if (process.env.ENABLE_SHADOW === "false" && settings?.shadow === undefined) {
+    merged.shadow = false;
+  }
+  return merged;
 }
 
 // Maps a resolved ViewPreset onto the StudioSettings shape renderStudioImage

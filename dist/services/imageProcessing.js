@@ -17,6 +17,8 @@ exports.removeBackground = removeBackground;
 exports.composeStudioImage = composeStudioImage;
 exports.computeTargetSize = computeTargetSize;
 exports.computePosition = computePosition;
+exports.flattenMasterToWhite = flattenMasterToWhite;
+exports.computeOccupancy = computeOccupancy;
 exports.generateVariants = generateVariants;
 exports.validateMasterImage = validateMasterImage;
 exports.resolveViewSettings = resolveViewSettings;
@@ -63,21 +65,24 @@ exports.DEFAULT_ENHANCEMENT = {
 // Explicit per-view occupancy/position/shadow instead of one fixed
 // compact/standard/spacious padding for every angle. Tune freely per view —
 // nothing else in the pipeline depends on these specific numbers. Target
-// occupancy ranges: open front 86-90%, side/closed-lid/bottom 82-88% — these
+// occupancy: open front 88-92%, side 82-88%, closed-lid/bottom 82-90% — these
 // only set the SCALE the bbox-cropped product is resized to; how tight the
 // bbox itself is comes from localSegmentation.ts's crop, not these numbers.
+// Every view gets a subtle grounding shadow by default now (catalogue-style
+// reference images all have one); ENABLE_SHADOW=false in resolveViewSettings
+// below is the global kill switch if it's ever not wanted.
 exports.VIEW_PRESETS = {
-    open_front: { scale: 0.88, position: "center-bottom", yOffset: -20, shadow: false },
-    open_angle: { scale: 0.87, position: "center", shadow: false },
-    closed_top: { scale: 0.88, position: "center", shadow: false },
-    closed_angle: { scale: 0.87, position: "center", shadow: false },
+    open_front: { scale: 0.90, position: "center-bottom", yOffset: -20, shadow: true },
+    open_angle: { scale: 0.88, position: "center", shadow: true },
+    closed_top: { scale: 0.86, position: "center", shadow: true },
+    closed_angle: { scale: 0.86, position: "center", shadow: true },
     closed_rear: { scale: 0.86, position: "center", shadow: true, shadowOffsetY: 18 },
-    bottom: { scale: 0.88, position: "center", shadow: false },
-    left_side: { scale: 0.87, position: "center", shadow: false },
-    right_side: { scale: 0.87, position: "center", shadow: false },
-    ports: { scale: 0.88, position: "center", shadow: false },
-    detail: { scale: 0.86, position: "center", shadow: false },
-    custom: { scale: 0.86, position: "center", shadow: false },
+    bottom: { scale: 0.86, position: "center", shadow: true },
+    left_side: { scale: 0.85, position: "center", shadow: true },
+    right_side: { scale: 0.85, position: "center", shadow: true },
+    ports: { scale: 0.86, position: "center", shadow: true },
+    detail: { scale: 0.86, position: "center", shadow: true },
+    custom: { scale: 0.86, position: "center", shadow: true },
 };
 /**
  * Removes the background via the PhotoRoom Remove Background API, returning
@@ -145,15 +150,22 @@ function computePosition(canvasWidth, canvasHeight, productWidth, productHeight,
         top: Math.max(0, Math.min(top, Math.max(0, canvasHeight - productHeight))),
     };
 }
-// Conservative source-photo enhancement: auto-exposure normalize (always),
-// then optional brightness/saturation (sharp modulate), contrast (linear
-// stretch around the midpoint), and mild sharpening. Never touches hue or
-// geometry, so it can't alter the physical product — only how the photo of
-// it looks.
+// Conservative source-photo enhancement: optional brightness/saturation
+// (sharp modulate), contrast (linear stretch around the midpoint), and mild
+// sharpening — each a no-op unless a caller/preset actually sets it away
+// from 1. Never touches hue or geometry, so it can't alter the physical
+// product — only how the photo of it looks.
+//
+// Deliberately does NOT call sharp's normalize(): that stretches the
+// histogram to fill the full dynamic range, which can visibly shift a
+// silver chassis toward white or a black one toward grey — exactly the
+// color-fidelity risk this pipeline exists to avoid. Auto-exposure isn't
+// worth that risk; a manual brightness value stays available for a genuinely
+// dark source photo.
 function applyEnhancement(buffer, settings) {
     return __awaiter(this, void 0, void 0, function* () {
         var _a, _b, _c;
-        let img = (0, sharp_1.default)(buffer).normalize();
+        let img = (0, sharp_1.default)(buffer);
         const brightness = (_a = settings.brightness) !== null && _a !== void 0 ? _a : 1;
         const saturation = (_b = settings.saturation) !== null && _b !== void 0 ? _b : 1;
         if (brightness !== 1 || saturation !== 1) {
@@ -213,7 +225,7 @@ function renderStudioImage(cleanedBuffer, settings) {
             const shadowAlpha = yield (0, sharp_1.default)(resizedProduct)
                 .ensureAlpha()
                 .extractChannel(3)
-                .linear((_h = settings.shadowOpacity) !== null && _h !== void 0 ? _h : 0.35, 0)
+                .linear((_h = settings.shadowOpacity) !== null && _h !== void 0 ? _h : 0.25, 0)
                 .blur(shadowBlur)
                 .toBuffer();
             const shadowLayer = yield (0, sharp_1.default)({
@@ -243,11 +255,46 @@ function renderStudioImage(cleanedBuffer, settings) {
     });
 }
 const VARIANT_SIZES = { product: 1200, thumbnail: 500 };
-// Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes),
-// as opposed to promptVersion which versions the OpenAI prompt text. Both
-// feed the processing fingerprint in imageCostControl.ts — bump this only
-// when a change here should invalidate cached/approved results.
-exports.PROCESSING_CONFIG_VERSION = "v1";
+// Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes).
+// Feeds the processing fingerprint in imageCostControl.ts — bump this only
+// when a change here should invalidate cached/approved results. v2: dropped
+// auto-normalize, retuned occupancy/shadow (see VIEW_PRESETS/applyEnhancement).
+exports.PROCESSING_CONFIG_VERSION = "v2";
+// Derives the opaque white-background ecommerce version from an already-
+// composed transparent master — a flatten + format convert, not a
+// re-composite, so the two versions stay pixel-identical everywhere but the
+// background (the white one is never a second, independently-generated
+// image).
+function flattenMasterToWhite(transparentMasterBuffer_1) {
+    return __awaiter(this, arguments, void 0, function* (transparentMasterBuffer, outputFormat = "webp", quality = 92) {
+        const img = (0, sharp_1.default)(transparentMasterBuffer).flatten({ background: "#ffffff" });
+        switch (outputFormat) {
+            case "jpeg":
+                return img.jpeg({ quality }).toBuffer();
+            case "png":
+                return img.png().toBuffer();
+            default:
+                return img.webp({ quality }).toBuffer();
+        }
+    });
+}
+// How much of the canvas the product actually occupies, for the admin
+// preview's "Product occupancy: XX%" readout — display only, not a pass/fail
+// check (see validateMasterImage for that). Assumes a white-background
+// master, same as validateMasterImage's own occupancy check.
+function computeOccupancy(masterBuffer) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const meta = yield (0, sharp_1.default)(masterBuffer).metadata();
+        const canvasSize = meta.width || MASTER_SIZE;
+        try {
+            const trimmed = yield (0, sharp_1.default)(masterBuffer).trim({ background: "#ffffff", threshold: 10 }).toBuffer({ resolveWithObject: true });
+            return Math.round((Math.max(trimmed.info.width, trimmed.info.height) / canvasSize) * 100);
+        }
+        catch (_a) {
+            return 0;
+        }
+    });
+}
 // Downscales the already-composited master into the catalogue's other two
 // sizes. No second PhotoRoom call and no re-compositing — same master pixels,
 // just resized, so all three sizes stay visually identical.
@@ -313,7 +360,14 @@ function validateMasterImage(masterBuffer) {
 function resolveViewSettings(viewType, settings) {
     var _a;
     const preset = (_a = exports.VIEW_PRESETS[viewType]) !== null && _a !== void 0 ? _a : exports.VIEW_PRESETS.custom;
-    return Object.assign(Object.assign(Object.assign({}, exports.DEFAULT_ENHANCEMENT), preset), settings);
+    const merged = Object.assign(Object.assign(Object.assign({}, exports.DEFAULT_ENHANCEMENT), preset), settings);
+    // Global kill switch — only when the caller didn't already pass an
+    // explicit shadow value of their own (e.g. the settings panel's live
+    // preview toggle), matching how every other 3-way merge here works.
+    if (process.env.ENABLE_SHADOW === "false" && (settings === null || settings === void 0 ? void 0 : settings.shadow) === undefined) {
+        merged.shadow = false;
+    }
+    return merged;
 }
 // Maps a resolved ViewPreset onto the StudioSettings shape renderStudioImage
 // expects — same mapping processProductImage's v2 branch always did inline.

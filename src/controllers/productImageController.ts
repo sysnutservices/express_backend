@@ -14,12 +14,22 @@ import {
   publishProductImages,
   OrchestratorError,
   OrchestratorErrorCode,
+  ProcessingMode,
+  DEFAULT_PROCESSING_MODE,
 } from "../services/productImageOrchestrator";
 
 export const uploadOriginalMiddleware = upload.single("image");
 
 function resolveViewType(raw: unknown): ProductViewType {
   return typeof raw === "string" && raw in VIEW_PRESETS ? (raw as ProductViewType) : "custom";
+}
+
+// Always explicit, never inferred — an unrecognized/missing value falls
+// back to the configured default (catalogue_safe unless the deployment set
+// IMAGE_PROCESSING_MODE=ai_edit), it never silently becomes ai_edit just
+// because the field was present but malformed.
+function resolveMode(raw: unknown): ProcessingMode {
+  return raw === "catalogue_safe" || raw === "ai_edit" ? raw : DEFAULT_PROCESSING_MODE;
 }
 
 function errorResponse(res: Response, err: unknown) {
@@ -178,6 +188,7 @@ function serializeRoot(root: IProductImage, versions: { version: IProductImage; 
       isActive: version.isActive,
       isApproved: version.isApproved,
       isPublished: version.isPublished,
+      transparentMasterUrl: version.transparentMasterUrl,
       masterImageUrl: version.masterImageUrl,
       productImageUrl: version.productImageUrl,
       thumbnailImageUrl: version.thumbnailImageUrl,
@@ -185,6 +196,7 @@ function serializeRoot(root: IProductImage, versions: { version: IProductImage; 
       processingSettings: version.processingSettings,
       rejectionReason: version.rejectionReason,
       qualityWarning: version.qualityWarning,
+      occupancyPercent: version.occupancyPercent,
       approvedAt: version.approvedAt,
       publishedAt: version.publishedAt,
       createdAt: version.createdAt,
@@ -201,10 +213,12 @@ export const processRootImage = async (req: Request, res: Response) => {
   try {
     const viewType = resolveViewType(req.body.viewType);
     const settings = sanitizeSettings(req.body.settings);
+    const mode = resolveMode(req.body.mode);
     const version = await createEcommerceImage({
       rootImageId: req.params.rootImageId,
       viewType,
       settings,
+      mode,
       initiatedBy: (req as any).user?._id ? String((req as any).user._id) : null,
     });
     res.json({
@@ -213,10 +227,13 @@ export const processRootImage = async (req: Request, res: Response) => {
         id: String(version._id),
         status: version.status,
         viewType: version.viewType,
+        processingModel: version.processingModel,
+        transparentUrl: version.transparentMasterUrl,
         masterUrl: version.masterImageUrl,
         processedUrl: version.productImageUrl,
         thumbnailUrl: version.thumbnailImageUrl,
         qualityWarning: version.qualityWarning ?? null,
+        occupancyPercent: version.occupancyPercent ?? null,
       },
     });
   } catch (err) {
@@ -235,10 +252,12 @@ export const updateVersionSettings = async (req: Request, res: Response) => {
       image: {
         id: String(version._id),
         status: version.status,
+        transparentUrl: version.transparentMasterUrl,
         masterUrl: version.masterImageUrl,
         processedUrl: version.productImageUrl,
         thumbnailUrl: version.thumbnailImageUrl,
         qualityWarning: version.qualityWarning ?? null,
+        occupancyPercent: version.occupancyPercent ?? null,
       },
     });
   } catch (err) {
