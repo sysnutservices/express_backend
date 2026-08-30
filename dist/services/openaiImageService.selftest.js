@@ -39,6 +39,16 @@ function main() {
     // Unknown view type falls back to "custom" rather than throwing.
     const fallback = (0, openaiImageService_1.buildLapsharkImagePrompt)({ viewType: "not_a_real_view" });
     assert_1.default.ok(fallback.includes(openaiImageService_1.VIEW_TYPE_DESCRIPTIONS.custom));
+    // 2c. The reflection-removal prompt is scoped to glare only, never a
+    //     general beautification/restoration invitation, and never asks for a
+    //     resize/recompose (that stays Sharp-only, same as the main prompt).
+    const reflectionPrompt = (0, openaiImageService_1.buildReflectionRemovalPrompt)().toLowerCase();
+    for (const word of [...bannedWords, "restore", "repair", "new"]) {
+        assert_1.default.ok(!new RegExp(`\\b${word}\\b`).test(reflectionPrompt), `reflection prompt must not contain "${word}"`);
+    }
+    assert_1.default.ok(reflectionPrompt.includes("glare") || reflectionPrompt.includes("reflection"));
+    assert_1.default.strictEqual(typeof openaiImageService_1.REFLECTION_PROMPT_VERSION, "string");
+    assert_1.default.ok(openaiImageService_1.REFLECTION_PROMPT_VERSION.length > 0);
     assert_1.default.strictEqual(typeof openaiImageService_1.IMAGE_PROMPT_VERSION, "string");
     assert_1.default.ok(openaiImageService_1.IMAGE_PROMPT_VERSION.length > 0);
     // 2c. computeEditSize matches the source's own aspect ratio (never forces

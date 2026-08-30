@@ -12,11 +12,28 @@ import {
   validateMasterImage,
   computeOccupancy,
   flattenMasterToWhite,
+  analyzeExposure,
+  analyzeReflection,
+  computeRegionChangePercent,
   PROCESSING_CONFIG_VERSION,
 } from "./imageProcessing";
 import { computeProcessingHash, estimateCost, checkBudgetAndLimits, recordUsage } from "./imageCostControl";
 import { removeBackgroundLocal } from "./localSegmentation";
-import { buildLapsharkImagePrompt, generateEcommerceEdit, classifyOpenAIError, IMAGE_PROMPT_VERSION } from "./openaiImageService";
+import {
+  buildLapsharkImagePrompt,
+  buildReflectionRemovalPrompt,
+  generateEcommerceEdit,
+  classifyOpenAIError,
+  IMAGE_PROMPT_VERSION,
+  REFLECTION_PROMPT_VERSION,
+} from "./openaiImageService";
+
+export type BrightnessMode = "auto" | "original"; // "manual" is just the caller explicitly setting settings.brightness/contrast — no separate mode value needed
+export type ReflectionMode = "off" | "auto" | "on";
+// A glare correction touching more than this share of the product region
+// (comparing the pre/post cutout) means the edit did more than reduce a
+// hotspot — flag for review rather than silently accept it.
+const REFLECTION_CHANGE_REVIEW_THRESHOLD = 15;
 
 // Two processing modes, chosen explicitly per request — never inferred:
 //
@@ -90,13 +107,28 @@ async function nextVersionNumber(rootId: Types.ObjectId): Promise<number> {
 // once (createEcommerceImage calls this at generation time; recomposeVersion
 // calls it again against the same cached cutout for Sharp-only settings
 // changes, never re-running the ~1-2s ML segmentation step).
+//
+// brightnessMode "auto" (the default) computes a conservative, capped
+// brightness/contrast correction FROM THIS PHOTO'S OWN HISTOGRAM (see
+// analyzeExposure) and uses it as the enhancement default — but only when
+// the caller hasn't already set brightness/contrast explicitly (an admin
+// manually moving the sliders always wins; that's "Manual" mode, and needs
+// no separate code path). "original" skips this analysis entirely.
 async function composeAndUpload(
   cutoutBuffer: Buffer,
   viewType: ProductViewType,
   settings: Partial<ViewPreset> | undefined,
-  nameHintBase: string | undefined
+  nameHintBase: string | undefined,
+  brightnessMode: BrightnessMode = "auto"
 ) {
-  const merged = resolveViewSettings(viewType, settings);
+  let effectiveSettings = settings;
+  if (brightnessMode === "auto" && settings?.brightness === undefined && settings?.contrast === undefined) {
+    const exposure = await analyzeExposure(cutoutBuffer);
+    if (exposure.needsCorrection) {
+      effectiveSettings = { ...settings, brightness: exposure.brightness, contrast: exposure.contrast };
+    }
+  }
+  const merged = resolveViewSettings(viewType, effectiveSettings);
   const studioSettings = viewPresetToStudioSettings(merged);
 
   // Transparent master first — the canonical artifact; the white ecommerce
@@ -128,6 +160,8 @@ export interface CreateEcommerceImageOptions {
   settings?: Partial<ViewPreset>;
   initiatedBy: string | null;
   mode?: ProcessingMode;
+  brightnessMode?: BrightnessMode;
+  reflectionMode?: ReflectionMode;
 }
 
 // The one entry point for both "Create Ecommerce Image" and "Reprocess" —
@@ -277,10 +311,90 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
       processingModel = "local-segmentation";
     }
 
+    // Reflection: detection is always local/free; the OpenAI-assisted
+    // correction only ever runs when explicitly turned "on", and never
+    // stacks a second OpenAI call on top of an ai_edit attempt (the source
+    // spec's "do not repeatedly process the image through AI").
+    let reflectionNote: string | undefined;
+    const reflectionMode: ReflectionMode = opts.reflectionMode ?? "auto";
+    if (reflectionMode !== "off") {
+      const reflection = await analyzeReflection(cutoutBuffer);
+      if (reflection.detected) {
+        const reflectionBudgetOk =
+          reflectionMode === "on" && mode === "catalogue_safe" ? (await checkBudgetAndLimits(estimateCost(null).amountUsd)).allowed : false;
+        if (reflectionBudgetOk) {
+          const startedAt = Date.now();
+          try {
+            const reflectionEdit = await generateEcommerceEdit(originalBuffer, mimeType, buildReflectionRemovalPrompt());
+            const cost = estimateCost(reflectionEdit.usage);
+            await recordUsage({
+              productId: root.productId,
+              productImageId: root._id as Types.ObjectId,
+              imageVersionId: version._id as Types.ObjectId,
+              operation,
+              aiModel: "gpt-image-2",
+              originalImageHash: root.originalImageHash!,
+              processingHash: hash,
+              promptVersion: REFLECTION_PROMPT_VERSION,
+              processingConfigVersion: PROCESSING_CONFIG_VERSION,
+              status: "success",
+              inputUsage: reflectionEdit.usage,
+              outputUsage: reflectionEdit.usage,
+              totalUsage: reflectionEdit.usage,
+              estimatedCost: cost.amountUsd,
+              estimatedCostIsApproximate: cost.approximate,
+              durationMs: Date.now() - startedAt,
+              initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
+            });
+            const correctedCutout = await removeBackgroundLocal(reflectionEdit.buffer);
+            const changePercent = await computeRegionChangePercent(cutoutBuffer, correctedCutout);
+            cutoutBuffer = correctedCutout;
+            processingModel += "+reflection-correction";
+            reflectionNote =
+              changePercent > REFLECTION_CHANGE_REVIEW_THRESHOLD
+                ? `Reflection correction changed ~${changePercent}% of the product region — please review closely`
+                : `Reflection glare reduced (~${reflection.hotspotPercent}% of frame, ${changePercent}% region change)`;
+          } catch (err) {
+            // Reflection correction failing isn't fatal to the whole
+            // attempt — keep the uncorrected (but still valid) cutout and
+            // just note that glare was seen but not addressed.
+            const classified = classifyOpenAIError(err);
+            await recordUsage({
+              productId: root.productId,
+              productImageId: root._id as Types.ObjectId,
+              imageVersionId: version._id as Types.ObjectId,
+              operation,
+              aiModel: "gpt-image-2",
+              originalImageHash: root.originalImageHash!,
+              processingHash: hash,
+              promptVersion: REFLECTION_PROMPT_VERSION,
+              processingConfigVersion: PROCESSING_CONFIG_VERSION,
+              status: classified.transient ? "error_transient" : "error_permanent",
+              inputUsage: null,
+              outputUsage: null,
+              totalUsage: null,
+              estimatedCost: null,
+              estimatedCostIsApproximate: true,
+              durationMs: Date.now() - startedAt,
+              errorMessage: classified.message.slice(0, 500),
+              initiatedBy: opts.initiatedBy ? (new Types.ObjectId(opts.initiatedBy) as any) : null,
+            });
+            reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — automatic correction failed`;
+          }
+        } else if (reflectionMode !== "on") {
+          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — enable Reflection Removal to correct it`;
+        } else if (mode !== "catalogue_safe") {
+          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI Edit mode already used its one OpenAI call)`;
+        } else {
+          reflectionNote = `Possible reflection/glare detected (~${reflection.hotspotPercent}% of frame) — not corrected (AI processing currently disabled or over budget)`;
+        }
+      }
+    }
+
     const cutoutUpload = await uploadBufferToImageKit(cutoutBuffer, "/lapshark/products/cutouts", `${opts.viewType} cutout`);
     const product = await Product.findById(root.productId).select("title").lean();
     const { merged, transparentUpload, masterUpload, productUpload, thumbnailUpload, qualityWarning, occupancyPercent } =
-      await composeAndUpload(cutoutBuffer, opts.viewType, opts.settings, product?.title);
+      await composeAndUpload(cutoutBuffer, opts.viewType, opts.settings, product?.title, opts.brightnessMode ?? "auto");
 
     await ProductImage.updateMany(
       { rootImageId: root._id, _id: { $ne: version._id }, isActive: true },
@@ -288,7 +402,7 @@ export async function createEcommerceImage(opts: CreateEcommerceImageOptions): P
     );
 
     version.status = "READY_FOR_REVIEW";
-    version.qualityWarning = qualityWarning ?? undefined;
+    version.qualityWarning = [qualityWarning, reflectionNote].filter(Boolean).join(" · ") || undefined;
     version.occupancyPercent = occupancyPercent;
     version.cutoutImageUrl = cutoutUpload.url;
     version.transparentMasterUrl = transparentUpload.url;

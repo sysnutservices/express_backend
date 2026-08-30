@@ -144,6 +144,57 @@ function main() {
         assert_1.default.strictEqual(flattenedMeta.hasAlpha, false, "flattened white version must have no alpha channel");
         const flattenedCorner = yield (0, sharp_1.default)(flattened).extract({ left: 1, top: 1, width: 1, height: 1 }).raw().toBuffer();
         assert_1.default.deepStrictEqual(Array.from(flattenedCorner), [255, 255, 255], "flattened corner must be pure white");
+        // 9. analyzeExposure: a uniformly dark image needs a capped brightness
+        //    boost; a reasonably exposed, reasonably varied image needs nothing.
+        const darkBuffer = Buffer.alloc(100 * 100 * 3, 40);
+        const darkPng = yield (0, sharp_1.default)(darkBuffer, { raw: { width: 100, height: 100, channels: 3 } }).png().toBuffer();
+        const darkExposure = yield (0, imageProcessing_1.analyzeExposure)(darkPng);
+        assert_1.default.ok(darkExposure.brightness > 1, "a dark image should get a brightness boost");
+        assert_1.default.ok(darkExposure.brightness <= 1.08, "brightness boost must stay within the +8% cap");
+        assert_1.default.strictEqual(darkExposure.needsCorrection, true);
+        const healthyBuffer = Buffer.alloc(100 * 100 * 3);
+        for (let i = 0; i < healthyBuffer.length; i += 3) {
+            const v = Math.floor(i / 3) % 2 === 0 ? 80 : 180; // mean 130, stdev 50 — inside the healthy band
+            healthyBuffer[i] = healthyBuffer[i + 1] = healthyBuffer[i + 2] = v;
+        }
+        const healthyPng = yield (0, sharp_1.default)(healthyBuffer, { raw: { width: 100, height: 100, channels: 3 } }).png().toBuffer();
+        const healthyExposure = yield (0, imageProcessing_1.analyzeExposure)(healthyPng);
+        assert_1.default.strictEqual(healthyExposure.needsCorrection, false, "a well-exposed, varied image should need no correction");
+        // 10. analyzeReflection: a small near-white hotspot on an otherwise darker
+        //     product is flagged; a naturally bright/silver product (uniformly
+        //     near-white) is not — the whole point is not to flag every silver
+        //     laptop as having a reflection problem.
+        const w = 100, h = 100;
+        const hotspotBuf = Buffer.alloc(w * h * 4);
+        for (let i = 0; i < w * h; i++) {
+            const o = i * 4;
+            hotspotBuf[o] = hotspotBuf[o + 1] = hotspotBuf[o + 2] = 60;
+            hotspotBuf[o + 3] = 255;
+        }
+        for (let y = 40; y < 53; y++) {
+            for (let x = 40; x < 53; x++) {
+                const o = (y * w + x) * 4;
+                hotspotBuf[o] = hotspotBuf[o + 1] = hotspotBuf[o + 2] = 253; // 169px hotspot = 1.69%
+            }
+        }
+        const hotspotPng = yield (0, sharp_1.default)(hotspotBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+        const hotspotResult = yield (0, imageProcessing_1.analyzeReflection)(hotspotPng);
+        assert_1.default.strictEqual(hotspotResult.detected, true, "a small bright hotspot on a darker product should be flagged");
+        assert_1.default.ok(hotspotResult.hotspotPercent > 1 && hotspotResult.hotspotPercent < 3);
+        const brightProductBuf = Buffer.alloc(w * h * 4, 252);
+        for (let i = 3; i < brightProductBuf.length; i += 4)
+            brightProductBuf[i] = 255; // alpha channel
+        const brightProductPng = yield (0, sharp_1.default)(brightProductBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+        const brightResult = yield (0, imageProcessing_1.analyzeReflection)(brightProductPng);
+        assert_1.default.strictEqual(brightResult.detected, false, "a naturally bright/silver product must not be flagged as glare");
+        // 11. computeRegionChangePercent: identical images show 0% change;
+        //     substantially different images show a large change.
+        const sameA = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
+        const sameB = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
+        assert_1.default.strictEqual(yield (0, imageProcessing_1.computeRegionChangePercent)(sameA, sameB), 0, "identical images must show 0% change");
+        const different = yield (0, sharp_1.default)({ create: { width: 50, height: 50, channels: 3, background: "#ffffff" } }).png().toBuffer();
+        const bigChange = yield (0, imageProcessing_1.computeRegionChangePercent)(sameA, different);
+        assert_1.default.ok(bigChange > 90, `very different images should show a large change percentage, got ${bigChange}%`);
         console.log("imageProcessing.selftest: all assertions passed");
     });
 }

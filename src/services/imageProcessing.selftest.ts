@@ -17,6 +17,9 @@ import {
   resolveViewSettings,
   computeOccupancy,
   flattenMasterToWhite,
+  analyzeExposure,
+  analyzeReflection,
+  computeRegionChangePercent,
   StudioSettings,
 } from "./imageProcessing";
 
@@ -152,6 +155,62 @@ async function main() {
   assert.strictEqual(flattenedMeta.hasAlpha, false, "flattened white version must have no alpha channel");
   const flattenedCorner = await sharp(flattened).extract({ left: 1, top: 1, width: 1, height: 1 }).raw().toBuffer();
   assert.deepStrictEqual(Array.from(flattenedCorner), [255, 255, 255], "flattened corner must be pure white");
+
+  // 9. analyzeExposure: a uniformly dark image needs a capped brightness
+  //    boost; a reasonably exposed, reasonably varied image needs nothing.
+  const darkBuffer = Buffer.alloc(100 * 100 * 3, 40);
+  const darkPng = await sharp(darkBuffer, { raw: { width: 100, height: 100, channels: 3 } }).png().toBuffer();
+  const darkExposure = await analyzeExposure(darkPng);
+  assert.ok(darkExposure.brightness > 1, "a dark image should get a brightness boost");
+  assert.ok(darkExposure.brightness <= 1.08, "brightness boost must stay within the +8% cap");
+  assert.strictEqual(darkExposure.needsCorrection, true);
+
+  const healthyBuffer = Buffer.alloc(100 * 100 * 3);
+  for (let i = 0; i < healthyBuffer.length; i += 3) {
+    const v = Math.floor(i / 3) % 2 === 0 ? 80 : 180; // mean 130, stdev 50 — inside the healthy band
+    healthyBuffer[i] = healthyBuffer[i + 1] = healthyBuffer[i + 2] = v;
+  }
+  const healthyPng = await sharp(healthyBuffer, { raw: { width: 100, height: 100, channels: 3 } }).png().toBuffer();
+  const healthyExposure = await analyzeExposure(healthyPng);
+  assert.strictEqual(healthyExposure.needsCorrection, false, "a well-exposed, varied image should need no correction");
+
+  // 10. analyzeReflection: a small near-white hotspot on an otherwise darker
+  //     product is flagged; a naturally bright/silver product (uniformly
+  //     near-white) is not — the whole point is not to flag every silver
+  //     laptop as having a reflection problem.
+  const w = 100, h = 100;
+  const hotspotBuf = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const o = i * 4;
+    hotspotBuf[o] = hotspotBuf[o + 1] = hotspotBuf[o + 2] = 60;
+    hotspotBuf[o + 3] = 255;
+  }
+  for (let y = 40; y < 53; y++) {
+    for (let x = 40; x < 53; x++) {
+      const o = (y * w + x) * 4;
+      hotspotBuf[o] = hotspotBuf[o + 1] = hotspotBuf[o + 2] = 253; // 169px hotspot = 1.69%
+    }
+  }
+  const hotspotPng = await sharp(hotspotBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+  const hotspotResult = await analyzeReflection(hotspotPng);
+  assert.strictEqual(hotspotResult.detected, true, "a small bright hotspot on a darker product should be flagged");
+  assert.ok(hotspotResult.hotspotPercent > 1 && hotspotResult.hotspotPercent < 3);
+
+  const brightProductBuf = Buffer.alloc(w * h * 4, 252);
+  for (let i = 3; i < brightProductBuf.length; i += 4) brightProductBuf[i] = 255; // alpha channel
+  const brightProductPng = await sharp(brightProductBuf, { raw: { width: w, height: h, channels: 4 } }).png().toBuffer();
+  const brightResult = await analyzeReflection(brightProductPng);
+  assert.strictEqual(brightResult.detected, false, "a naturally bright/silver product must not be flagged as glare");
+
+  // 11. computeRegionChangePercent: identical images show 0% change;
+  //     substantially different images show a large change.
+  const sameA = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
+  const sameB = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#808080" } }).png().toBuffer();
+  assert.strictEqual(await computeRegionChangePercent(sameA, sameB), 0, "identical images must show 0% change");
+
+  const different = await sharp({ create: { width: 50, height: 50, channels: 3, background: "#ffffff" } }).png().toBuffer();
+  const bigChange = await computeRegionChangePercent(sameA, different);
+  assert.ok(bigChange > 90, `very different images should show a large change percentage, got ${bigChange}%`);
 
   console.log("imageProcessing.selftest: all assertions passed");
 }

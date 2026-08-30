@@ -9,6 +9,8 @@ import {
   classifyOpenAIError,
   computeEditSize,
   IMAGE_PROMPT_VERSION,
+  buildReflectionRemovalPrompt,
+  REFLECTION_PROMPT_VERSION,
 } from "./openaiImageService";
 import { ProductViewType } from "./imageProcessing";
 
@@ -44,6 +46,17 @@ function main() {
   // Unknown view type falls back to "custom" rather than throwing.
   const fallback = buildLapsharkImagePrompt({ viewType: "not_a_real_view" as ProductViewType });
   assert.ok(fallback.includes(VIEW_TYPE_DESCRIPTIONS.custom));
+
+  // 2c. The reflection-removal prompt is scoped to glare only, never a
+  //     general beautification/restoration invitation, and never asks for a
+  //     resize/recompose (that stays Sharp-only, same as the main prompt).
+  const reflectionPrompt = buildReflectionRemovalPrompt().toLowerCase();
+  for (const word of [...bannedWords, "restore", "repair", "new"]) {
+    assert.ok(!new RegExp(`\\b${word}\\b`).test(reflectionPrompt), `reflection prompt must not contain "${word}"`);
+  }
+  assert.ok(reflectionPrompt.includes("glare") || reflectionPrompt.includes("reflection"));
+  assert.strictEqual(typeof REFLECTION_PROMPT_VERSION, "string");
+  assert.ok(REFLECTION_PROMPT_VERSION.length > 0);
 
   assert.strictEqual(typeof IMAGE_PROMPT_VERSION, "string");
   assert.ok(IMAGE_PROMPT_VERSION.length > 0);

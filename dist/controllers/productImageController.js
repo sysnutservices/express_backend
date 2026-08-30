@@ -34,6 +34,12 @@ function resolveViewType(raw) {
 function resolveMode(raw) {
     return raw === "catalogue_safe" || raw === "ai_edit" ? raw : productImageOrchestrator_1.DEFAULT_PROCESSING_MODE;
 }
+function resolveBrightnessMode(raw) {
+    return raw === "original" ? "original" : "auto";
+}
+function resolveReflectionMode(raw) {
+    return raw === "off" || raw === "on" ? raw : "auto";
+}
 function errorResponse(res, err) {
     if (err instanceof productImageOrchestrator_1.OrchestratorError) {
         const { status, message } = mapOrchestratorError(err.code);
@@ -213,11 +219,15 @@ const processRootImage = (req, res) => __awaiter(void 0, void 0, void 0, functio
         const viewType = resolveViewType(req.body.viewType);
         const settings = (0, imageSettingsValidation_1.sanitizeSettings)(req.body.settings);
         const mode = resolveMode(req.body.mode);
+        const brightnessMode = resolveBrightnessMode(req.body.brightnessMode);
+        const reflectionMode = resolveReflectionMode(req.body.reflectionMode);
         const version = yield (0, productImageOrchestrator_1.createEcommerceImage)({
             rootImageId: req.params.rootImageId,
             viewType,
             settings,
             mode,
+            brightnessMode,
+            reflectionMode,
             initiatedBy: ((_a = req.user) === null || _a === void 0 ? void 0 : _a._id) ? String(req.user._id) : null,
         });
         res.json({
