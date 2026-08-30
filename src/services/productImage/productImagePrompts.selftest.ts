@@ -27,21 +27,26 @@ function main() {
   }
   assert.strictEqual(new Set(built).size, built.length, "every image type must produce a distinct prompt");
 
-  // 2. The master prompt's own non-negotiable guarantees are present.
-  assert.ok(MASTER_PROMPT.startsWith("EDIT THE SUPPLIED PHOTOGRAPH. DO NOT RECREATE THE PRODUCT."));
-  assert.ok(MASTER_PROMPT.includes("Do not generate a replacement product"));
-  assert.ok(MASTER_PROMPT.toLowerCase().includes("same physical laptop"));
+  // 2. The master prompt's own non-negotiable identity guarantees are
+  //    present — product identity is carried by this prompt alone now (see
+  //    the v2.0 comment in productImagePrompts.ts for why there's no runtime
+  //    enforcement of it anymore).
+  assert.ok(MASTER_PROMPT.startsWith("EDIT THE SUPPLIED LAPTOP PHOTOGRAPH INTO A PROFESSIONAL E-COMMERCE PRODUCT PHOTOGRAPH."));
+  assert.ok(MASTER_PROMPT.includes("Do not replace the laptop with another laptop."));
+  assert.ok(MASTER_PROMPT.toLowerCase().includes("preserve the exact physical identity"));
+  assert.ok(MASTER_PROMPT.toLowerCase().includes("same laptop supplied in the source image"));
+  assert.ok(MASTER_PROMPT.includes("PRODUCT IDENTITY HAS PRIORITY OVER BEAUTIFICATION."));
 
-  // 2b. Geometry/orientation preservation — the exact failure mode a live
-  //     test caught (a source photo came back with the laptop rotated
-  //     vertical, keyboard and trackpad gone) — and the prompt must NOT
-  //     hand OpenAI any composition/framing responsibility, since Sharp
-  //     already owns that reliably everywhere else in this pipeline.
+  // 2b. Composition is explicitly GPT's job now (v2.0 — the opposite of the
+  //     v1.x architecture, where a forced square canvas + composition-owning
+  //     prompt together caused a live rotated-result failure; that failure
+  //     mode doesn't apply anymore because the OUTPUT canvas is what OpenAI
+  //     is asked for directly, not a mismatched fixed size layered under a
+  //     prompt fighting it).
+  assert.ok(MASTER_PROMPT.includes("1024 x 1024"));
+  assert.ok(MASTER_PROMPT.toLowerCase().includes("center the laptop"));
+  assert.ok(MASTER_PROMPT.toLowerCase().includes("keep the entire laptop inside the frame"));
   assert.ok(MASTER_PROMPT.toLowerCase().includes("do not rotate the laptop"));
-  assert.ok(MASTER_PROMPT.toLowerCase().includes("do not remove the keyboard"));
-  assert.ok(MASTER_PROMPT.toLowerCase().includes("do not remove the trackpad"));
-  assert.ok(!MASTER_PROMPT.toLowerCase().includes("center the product"), "must not ask OpenAI to center/compose — that's Sharp's job");
-  assert.ok(!MASTER_PROMPT.toLowerCase().includes("correct minor perspective"), "must not ask OpenAI to correct perspective/alignment — that's Sharp's job");
 
   // 3. Screen-state prompts actually say something different about the
   //    screen, and don't cross-contradict each other.

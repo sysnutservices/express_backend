@@ -44,42 +44,34 @@ export interface OpenAIEditResult {
   usage: Record<string, unknown> | null;
 }
 
-// One edit call — the ONE OpenAI operation per processing attempt. Sharp
-// (not OpenAI) still produces the 2000/1200/500 catalogue variants from
-// this one buffer; `size` is the caller's choice (see
-// productImage/productImageEditor.ts for why it's a fixed 1:1 square here).
+// One edit call — the ONE OpenAI operation per processing attempt. The
+// original photo goes to OpenAI at full resolution, unresized/uncropped;
+// `size` is the requested OUTPUT canvas (see
+// productImage/productImageEditor.ts — currently always "1024x1024").
 //
-// `mask`, when passed, is an RGBA PNG the same dimensions as the image:
-// opaque = preserve exactly, transparent = free for the model to
-// regenerate. Per OpenAI's documented images.edit mask semantics (dall-e-2
-// and later). Product preservation now rides on this hard pixel mask —
-// built from the same local segmentation catalogue_safe uses — rather than
-// on the text prompt alone; productImage/productImageEditor.ts verifies
-// compliance on every real call (see MaskViolationError) instead of trusting
-// it blindly, since this is unconfirmed live against gpt-image-2 specifically.
-export async function editImage(
-  originalBuffer: Buffer,
-  mimeType: string,
-  prompt: string,
-  size: string,
-  mask?: Buffer
-): Promise<OpenAIEditResult> {
+// No mask. v1.2 briefly added a hard OpenAI edit mask (opaque = preserve,
+// transparent = editable) for product-pixel safety, but that blocked the
+// beautification this pipeline exists to do (brightness/glare/dust
+// cleanup can't touch "preserved" pixels), and was confirmed live to not
+// even reliably hold gpt-image-2 to it anyway. Product identity now rides
+// on the prompt alone, same as v1.1 and earlier — see the v2.0 comment in
+// productImagePrompts.ts for the full reasoning, and productImageEditor.ts
+// for what actually protects identity now (manual review before publish,
+// not a runtime pixel check).
+export async function editImage(originalBuffer: Buffer, mimeType: string, prompt: string, size: string): Promise<OpenAIEditResult> {
   const openai = getClient();
   const file = await toFile(originalBuffer, "source", { type: mimeType });
-  const maskFile = mask ? await toFile(mask, "mask.png", { type: "image/png" }) : undefined;
 
   const response = await openai.images.edit({
     model: "gpt-image-2",
     image: file,
-    ...(maskFile ? { mask: maskFile } : {}),
     prompt,
     size: size as any,
+    quality: "high",
     // input_fidelity is documented in the SDK's types as supported for
     // "gpt-image-1.5 and later", but the live API rejects it for
     // gpt-image-2 specifically (400: "does not support the 'input_fidelity'
-    // parameter") — confirmed by an actual call, not the docs. Product
-    // preservation is instead carried by the mask (when present) and the
-    // text prompt as a fallback.
+    // parameter") — confirmed by an actual call, not the docs.
     n: 1,
   });
 
