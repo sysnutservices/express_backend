@@ -36,14 +36,30 @@ writes to the same `.env` file server-side (`aiSettingsController.ts` +
      upper-center region (a coarse signal, not a real vision classifier).
    - `productImagePrompts.buildProductImagePrompt()` returns the shared
      `MASTER_PROMPT` plus one short, type-specific addition.
+   - `computeEditSize()` picks an edit canvas matching the source photo's own
+     aspect ratio (capped at 1536px, min 512px) — never a forced square; see
+     the comment at the top of `productImageEditor.ts` for the live failure
+     (a rotated, geometry-broken result) that made this non-negotiable.
+   - `buildPreserveMask()` runs the SAME local segmentation (IS-Net) that
+     `catalogue_safe` uses — *before* the OpenAI call this time — and turns
+     its alpha silhouette into an OpenAI edit mask: opaque = preserve
+     exactly, transparent = free for the model to regenerate. This is what
+     actually protects product pixels now, not the prompt.
    - `openaiClient.editImage()` calls `openai.images.edit` with
-     `model: "gpt-image-2"`, the real photo as the image input, a fixed
-     1024×1024 (1:1) size, and that prompt. One call per attempt, with up to
-     2 retries only for transient errors (429/5xx/timeout — never for
-     invalid input or content-policy rejections).
-4. The orchestrator re-runs the *same* local segmentation (IS-Net) on
-   OpenAI's output — OpenAI's own transparency, if any, is never trusted —
-   to get a robust alpha/bounding box, then Sharp composites the transparent
+     `model: "gpt-image-2"`, the real photo, that mask, the edit-size canvas,
+     and the prompt. One call per attempt.
+   - `verifyMaskRespected()` checks the result's masked (preserved) region
+     against the source — if OpenAI altered it anyway (mask compliance for
+     gpt-image-2 specifically isn't confirmed by anything but this runtime
+     check), that's a `MaskViolationError`; combined with the existing
+     `GeometryMismatchError` (orientation changed), up to 2 retries fire only
+     for these or transient errors (429/5xx/timeout) — never for invalid
+     input or content-policy rejections.
+4. The orchestrator re-runs the *same* local segmentation again on OpenAI's
+   output — OpenAI's own transparency, if any, is never trusted — to get a
+   robust alpha/bounding box for compositing (a second, independent run from
+   the pre-edit mask above; the mask protects pixels during generation, this
+   one drives the actual cutout), then Sharp composites the transparent
    master, the white ecommerce derivative, and the 2000/1200/500 catalogue
    sizes exactly as `catalogue_safe` does. OpenAI is never called again for
    any of those derivative sizes.
