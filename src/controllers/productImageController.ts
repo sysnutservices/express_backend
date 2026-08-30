@@ -6,16 +6,13 @@ import { upload } from "./productController";
 import { sanitizeSettings } from "../utils/imageSettingsValidation";
 import { uploadBufferToImageKit } from "../services/imagekit";
 import { VIEW_PRESETS, ProductViewType } from "../services/imageProcessing";
-import { hashImageBuffer, getMonthlyUsageSummary, getUsageByProduct } from "../services/imageCostControl";
-import ImageProcessingUsage from "../models/ImageProcessingUsage";
+import { hashImageBuffer } from "../utils/imageHash";
 import {
   createEcommerceImage,
   recomposeVersion,
   publishProductImages,
   OrchestratorError,
   OrchestratorErrorCode,
-  ProcessingMode,
-  DEFAULT_PROCESSING_MODE,
   BrightnessMode,
   ReflectionMode,
 } from "../services/productImageOrchestrator";
@@ -24,14 +21,6 @@ export const uploadOriginalMiddleware = upload.single("image");
 
 function resolveViewType(raw: unknown): ProductViewType {
   return typeof raw === "string" && raw in VIEW_PRESETS ? (raw as ProductViewType) : "custom";
-}
-
-// Always explicit, never inferred — an unrecognized/missing value falls
-// back to the configured default (catalogue_safe unless the deployment set
-// IMAGE_PROCESSING_MODE=ai_edit), it never silently becomes ai_edit just
-// because the field was present but malformed.
-function resolveMode(raw: unknown): ProcessingMode {
-  return raw === "catalogue_safe" || raw === "ai_edit" ? raw : DEFAULT_PROCESSING_MODE;
 }
 
 function resolveBrightnessMode(raw: unknown): BrightnessMode {
@@ -61,15 +50,6 @@ function mapOrchestratorError(code: OrchestratorErrorCode): { status: number; me
     case "NOT_RECOMPOSABLE":
     case "NOTHING_APPROVED":
       return { status: 400, message: (code === "NOTHING_APPROVED") ? "No approved images to publish" : "This image cannot be processed" };
-    case "AI_DISABLED":
-      return { status: 503, message: "AI image processing is temporarily disabled." };
-    case "MONTHLY_BUDGET":
-      return { status: 402, message: "Monthly image processing budget has been reached." };
-    case "DAILY_LIMIT":
-    case "HOURLY_LIMIT":
-      return { status: 429, message: "Image processing limit reached, please try again later." };
-    case "OPENAI_FAILED":
-      return { status: 502, message: "Image processing service is temporarily unavailable, please try again shortly." };
     default:
       return { status: 500, message: "Image processing failed" };
   }
@@ -165,15 +145,7 @@ export const listProductImages = async (req: Request, res: Response) => {
     const slots = await Promise.all(
       roots.map(async (root) => {
         const versions = await ProductImage.find({ rootImageId: root._id }).sort({ version: -1 });
-        const usageByVersion = await ImageProcessingUsage.find({
-          imageVersionId: { $in: versions.map((v) => v._id) },
-          status: "success",
-        }).sort({ createdAt: -1 });
-        const usageMap = new Map(usageByVersion.map((u) => [String(u.imageVersionId), u]));
-        return serializeRoot(
-          root,
-          versions.map((v) => ({ version: v, usage: usageMap.get(String(v._id)) }))
-        );
+        return serializeRoot(root, versions);
       })
     );
 
@@ -183,14 +155,14 @@ export const listProductImages = async (req: Request, res: Response) => {
   }
 };
 
-function serializeRoot(root: IProductImage, versions: { version: IProductImage; usage?: any }[]) {
+function serializeRoot(root: IProductImage, versions: IProductImage[]) {
   return {
     rootImageId: String(root._id),
     legacy: false,
     originalImageUrl: root.originalImageUrl,
     isPrimary: root.isPrimary,
     sortOrder: root.sortOrder,
-    versions: versions.map(({ version, usage }) => ({
+    versions: versions.map((version) => ({
       id: String(version._id),
       viewType: version.viewType,
       status: version.status,
@@ -210,8 +182,6 @@ function serializeRoot(root: IProductImage, versions: { version: IProductImage; 
       approvedAt: version.approvedAt,
       publishedAt: version.publishedAt,
       createdAt: version.createdAt,
-      estimatedCost: usage?.estimatedCost ?? null,
-      estimatedCostIsApproximate: usage?.estimatedCostIsApproximate ?? true,
     })),
   };
 }
@@ -223,14 +193,12 @@ export const processRootImage = async (req: Request, res: Response) => {
   try {
     const viewType = resolveViewType(req.body.viewType);
     const settings = sanitizeSettings(req.body.settings);
-    const mode = resolveMode(req.body.mode);
     const brightnessMode = resolveBrightnessMode(req.body.brightnessMode);
     const reflectionMode = resolveReflectionMode(req.body.reflectionMode);
     const version = await createEcommerceImage({
       rootImageId: req.params.rootImageId,
       viewType,
       settings,
-      mode,
       brightnessMode,
       reflectionMode,
       initiatedBy: (req as any).user?._id ? String((req as any).user._id) : null,
@@ -395,19 +363,3 @@ export const publishProduct = async (req: Request, res: Response) => {
   }
 };
 
-export const getUsageSummary = async (req: Request, res: Response) => {
-  try {
-    const month = typeof req.query.month === "string" ? req.query.month : undefined;
-    res.json({ success: true, summary: await getMonthlyUsageSummary(month) });
-  } catch (err) {
-    errorResponse(res, err);
-  }
-};
-
-export const getUsageByProductHandler = async (_req: Request, res: Response) => {
-  try {
-    res.json({ success: true, products: await getUsageByProduct() });
-  } catch (err) {
-    errorResponse(res, err);
-  }
-};
