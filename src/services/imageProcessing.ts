@@ -382,7 +382,7 @@ export interface ProductImageVariants {
 const VARIANT_SIZES = { product: 1200, thumbnail: 500 } as const;
 
 // Versions the *composition* config (VIEW_PRESETS/DEFAULT_ENHANCEMENT/sizes).
-// Feeds the processing fingerprint in imageCostControl.ts — bump this only
+// Feeds the processing fingerprint in utils/imageHash.ts — bump this only
 // when a change here should invalidate cached/approved results. v2: dropped
 // auto-normalize, retuned occupancy/shadow. v3: auto exposure/reflection
 // analysis (see analyzeExposure/analyzeReflection).

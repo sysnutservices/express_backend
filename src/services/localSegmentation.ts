@@ -266,11 +266,10 @@ export interface FullFrameAlpha {
 
 // The full segmentation pipeline (model inference, largest-component,
 // hole-fill, opening, closing) resized back to the ORIGINAL photo's own
-// resolution — no bbox crop. Shared by removeBackgroundLocal (which crops
-// it for the catalogue_safe cutout) and by productImageEditor's ai_edit mask
-// (which needs the alpha aligned to the full, uncropped frame to build an
-// OpenAI edit mask). Keeping this as one function means every consumer gets
-// the identical, already-hardened segmentation — no drift between them.
+// resolution — no bbox crop. Used by removeBackgroundLocal, which crops it
+// for the catalogue_safe cutout. Split out as its own function so the
+// pre-crop alpha is independently testable/reusable, not because anything
+// else currently consumes it.
 export async function segmentFullFrameAlpha(inputBuffer: Buffer): Promise<FullFrameAlpha> {
   const session = await getSession();
   const meta = await sharp(inputBuffer).metadata();
