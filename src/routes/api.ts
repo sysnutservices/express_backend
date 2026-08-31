@@ -15,7 +15,7 @@ import { ingestEvent, getOverviewStats, getProductAnalytics, getVisitors, getVis
 import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, deleteBlog } from '../controllers/blogController';
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
-import { getCart, addToCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
+import { getCart, addToCart, mergeGuestCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
 import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
 import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
 import { saveExtraOffer, removeExtraOffer } from '../controllers/extraOfferController';
@@ -174,6 +174,10 @@ router.delete("/wishlist/:productId", protect, removeFromWishlist);
 
 router.get("/cart", protect, getCart);
 router.post("/cart/add", protect, addToCart);
+// Called once right after login with whatever was in the guest's
+// localStorage cart — CartContext's syncGuestCart already posts here, this
+// route just never existed.
+router.post("/cart/merge", protect, mergeGuestCart);
 router.put("/cart/update", protect, updateCartItem);
 router.delete("/cart/remove/:productId", protect, removeCartItem);
 // Called by wamigo_backend's abandoned-cart cron/flow executor, not by any
