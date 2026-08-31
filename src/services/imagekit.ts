@@ -73,12 +73,19 @@ export const uploadUrlToImageKit = async (url: string, folder: string, nameHint?
 };
 
 // For a buffer we already have in memory (e.g. the output of the PhotoRoom
-// background-removal + compositing pipeline in imageProcessing.ts).
+// background-removal + compositing pipeline in imageProcessing.ts). Still
+// runs through toWebpBuffer like the other two upload paths — the buffer's
+// actual encoding depends on studioSettings.outputFormat resolving to "webp"
+// through several merge layers, and generateVariants() doesn't touch the
+// "master" size at all (see its own comment), so without this the file
+// silently uploads as whatever format Sharp happened to produce while still
+// being named "*.webp".
 export const uploadBufferToImageKit = async (buffer: Buffer, folder: string, nameHint?: string) => {
+    const webpBuffer = await toWebpBuffer(buffer);
     const filename = seoFilename(nameHint, "product-image", ".webp");
 
     const uploaded = await imagekit.upload({
-        file: buffer,
+        file: webpBuffer,
         fileName: filename,
         folder,
     });
