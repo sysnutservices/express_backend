@@ -64,6 +64,58 @@ export const addToCart = async (req: Request, res: Response) => {
 
 
 
+/* ======================
+   MERGE GUEST CART (on login)
+   ====================== */
+// Called once, right after login, with whatever a guest had sitting in
+// localStorage. Never trusts the guest's client-side snapshot for price/
+// title/specs — same principle as addToCart above — it only reads
+// productId+quantity out of each guest item and re-fetches the real
+// product server-side. Quantities from a matching existing item add
+// together (typical cart-merge behavior), everything is clamped to the
+// same 1-5 range updateCartItem enforces, and a guest item pointing at a
+// deleted/invalid product is skipped rather than crashing the whole merge.
+export const mergeGuestCart = async (req: Request, res: Response) => {
+    const userId = (req as any).user.id;
+    const guestItems = Array.isArray(req.body.items) ? req.body.items : [];
+
+    let cart = await Cart.findOne({ userId });
+    if (!cart) cart = new Cart({ userId, items: [] });
+
+    if (guestItems.length) {
+        const mobile = await User.findById(userId);
+        const productIds = guestItems.map((i: any) => i?.productId).filter(Boolean);
+        const products = await Product.find({ _id: { $in: productIds } });
+
+        for (const guestItem of guestItems) {
+            const product = products.find((p) => p._id.toString() === guestItem?.productId);
+            if (!product) continue; // deleted/invalid product — drop it rather than fail the merge
+
+            const requestedQty = Math.max(1, Math.min(5, Number(guestItem.quantity) || 1));
+            const existing = cart.items.find((i: any) => i.productId === guestItem.productId);
+
+            if (existing) {
+                existing.quantity = Math.max(1, Math.min(5, existing.quantity + requestedQty));
+            } else {
+                cart.items.push({
+                    productId: product._id.toString(),
+                    title: product.title,
+                    image: product.image,
+                    finalPrice: product.finalPrice,
+                    slug: product.slug,
+                    specs: product.specs || {},
+                    quantity: requestedQty,
+                    waId: `91${mobile?.mobile}`,
+                } as any);
+            }
+        }
+        cart.notified = false;
+    }
+
+    await cart.save();
+    res.json(cart);
+};
+
 export const updateCartItem = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
     const { productId, quantity } = req.body;
