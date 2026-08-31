@@ -9,6 +9,7 @@ import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrd
 import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
+import { calculateProductPrice } from "../utils/pricing";
 import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
@@ -69,7 +70,19 @@ export const createOrder = async (req: Request, res: Response) => {
 
 
     // ---- Calculate Total ----
+    // Extra Product Offer + price-change detection: cart/checkout display
+    // prices are computed client-side from whatever product data was last
+    // fetched, which can go stale if an offer expires or is edited while the
+    // item sits in the cart. This is the actual charge, so it always
+    // recomputes from the live product — never trusts item.finalPrice from
+    // the request — and if the client told us what it expected to pay
+    // (expectedFinalPrice, sent by the checkout page's own live price calc)
+    // and that no longer matches, the order is rejected with the corrected
+    // price instead of silently charging the new amount (spec: never
+    // silently charge a different amount than what the customer saw last).
     let total = 0;
+    let priceChanged = false;
+    const priceChanges: Array<{ productId: string; title: string; oldPrice: number; newPrice: number }> = [];
     const updatedItems = items.map((item: any) => {
       const product = products.find(
         (p) => p._id.toString() === item.productId
@@ -94,11 +107,18 @@ export const createOrder = async (req: Request, res: Response) => {
         (storageOption?.price || 0) +
         (warrantyOption?.price || 0);
 
-
-      const finalPrice = product.finalPrice + configCost;
+      // Extra Product Offer applies to the base selling price only, not to
+      // config addon costs — same split productController/ProductCard use.
+      const priced = calculateProductPrice(product.finalPrice, product.extraOffer);
+      const finalPrice = priced.finalPrice + configCost;
       const subtotal = finalPrice * item.quantity;
 
       total += subtotal;
+
+      if (typeof item.expectedFinalPrice === "number" && Math.abs(item.expectedFinalPrice - finalPrice) >= 1) {
+        priceChanged = true;
+        priceChanges.push({ productId: item.productId, title: product.title, oldPrice: item.expectedFinalPrice, newPrice: finalPrice });
+      }
 
       return {
         productId: item.productId,
@@ -108,9 +128,21 @@ export const createOrder = async (req: Request, res: Response) => {
         image: product.image,
         storage: storageOption,
         warranty: warrantyOption,
-        selectedConfig: item.config
+        selectedConfig: item.config,
+        originalPrice: priced.offer ? priced.sellingPrice + configCost : undefined,
+        extraOfferDiscount: priced.offer?.discountAmount,
+        extraOfferLabel: priced.offer?.offerLabel,
       };
     });
+
+    if (priceChanged) {
+      return res.status(409).json({
+        success: false,
+        priceChanged: true,
+        message: "One or more product offers have changed since you added them to your cart. Prices have been updated — please review and confirm.",
+        priceChanges,
+      });
+    }
 
     // ---- Validate + Apply Coupon ----
     // Same rules (active/expiry/usage-limit/min-order-value/percentage-vs-

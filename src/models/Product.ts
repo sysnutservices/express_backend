@@ -6,6 +6,46 @@ export interface IConfigOption {
   price: number;
 }
 
+// Product-level "Extra Product Offer" — an admin-set additional discount on
+// top of the existing price/discountPercent/finalPrice sale-price mechanism,
+// applied automatically at the storefront with no coupon code needed. Kept
+// as a single embedded subdocument (not its own collection) because every
+// place that needs it already loads the Product document — Product.find()
+// for listings, getProductById/getProductBySlug for the PDP, the order
+// item lookup in createOrder — so this travels along for free with zero
+// extra queries (see PRICING.md-equivalent comment in utils/pricing.ts).
+// One product has at most one offer at a time, matching the admin UI's
+// single "Save Promotion" / "Remove Promotion" actions.
+export type ExtraOfferDiscountType = "fixed" | "percentage" | "specialPrice";
+
+export interface IExtraOffer {
+  discountType: ExtraOfferDiscountType;
+  // Meaning depends on discountType: a ₹ amount for "fixed", a 0-100 percent
+  // for "percentage", or the special final price itself for "specialPrice".
+  discountValue: number;
+  offerLabel?: string;
+  startAt?: Date | null;
+  endAt?: Date | null;
+  // Manual on/off — the "Disabled" state. Independent of startAt/endAt, which
+  // drive "Scheduled"/"Active"/"Expired" once this is true. See
+  // utils/pricing.ts's getExtraOfferStatus for how the four states combine.
+  isActive: boolean;
+  showOnProduct: boolean;
+  showOnListing: boolean;
+  showOnHomepage: boolean;
+  // No cost/purchase-price field exists anywhere on Product today (checked:
+  // no cost, landedCost, or margin field on this schema). Per the feature
+  // spec, margin enforcement is intentionally NOT built without real cost
+  // data rather than inventing one — minimumMarginPercent is stored so an
+  // admin's intent survives if cost tracking is added later, but nothing
+  // currently reads it to block a save. See utils/pricing.ts's top comment.
+  minimumMarginPercent?: number;
+  createdBy?: mongoose.Schema.Types.ObjectId;
+  updatedBy?: mongoose.Schema.Types.ObjectId;
+  createdAt?: Date;
+  updatedAt?: Date;
+}
+
 export interface IProduct extends Document {
   productId: string;
   title: string;
@@ -73,6 +113,8 @@ export interface IProduct extends Document {
     storage: IConfigOption[];
     warranty: IConfigOption[];
   };
+
+  extraOffer?: IExtraOffer;
 }
 
 export const DEFAULT_CONFIG_OPTIONS = {
@@ -159,6 +201,24 @@ const ConfigOptionSchema = new Schema<IConfigOption>(
   { _id: false }
 );
 
+const ExtraOfferSchema = new Schema<IExtraOffer>(
+  {
+    discountType: { type: String, enum: ["fixed", "percentage", "specialPrice"], required: true },
+    discountValue: { type: Number, required: true },
+    offerLabel: { type: String },
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, default: null },
+    isActive: { type: Boolean, default: true },
+    showOnProduct: { type: Boolean, default: true },
+    showOnListing: { type: Boolean, default: true },
+    showOnHomepage: { type: Boolean, default: true },
+    minimumMarginPercent: { type: Number },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
+    updatedBy: { type: Schema.Types.ObjectId, ref: "User" },
+  },
+  { timestamps: true, _id: false }
+);
+
 const ProductSchema: Schema<IProduct> = new Schema(
   {
     productId: { type: String, required: true },
@@ -243,6 +303,11 @@ const ProductSchema: Schema<IProduct> = new Schema(
         default: () => DEFAULT_CONFIG_OPTIONS.warranty,
       },
     },
+
+    // Absent entirely on every existing product until an admin sets one —
+    // no default object, so `product.extraOffer` is undefined rather than a
+    // half-filled record no admin ever actually saved.
+    extraOffer: { type: ExtraOfferSchema, default: undefined },
   },
   { timestamps: true }
 );
