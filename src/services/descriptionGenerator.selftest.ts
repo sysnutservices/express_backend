@@ -166,14 +166,23 @@ The 8GB RAM is suitable for regular multitasking, while the 256GB storage provid
 ### Key Specifications
 
 * **Processor:** Intel Core i5 10th Generation
-* **RAM:** 8GB
-* **Storage:** 256GB
+* **RAM:** 8GB (Upgradable)
+* **Storage:** 256GB (Upgradable)
 * **Display:** 14-inch Full HD
 * **Operating System:** Windows 10
 * **Condition:** Refurbished
 
 This refurbished Dell Latitude 5410 is a good option for anyone looking for a capable business laptop at a lower price than buying a new device. It works well for everyday productivity, study and professional use.`;
   assert.deepStrictEqual(findViolations(wellFormedExample, structuredInput), [], "the store owner's target format must pass with zero violations");
+
+  // RAM/storage must always be flagged "(Upgradable)" — dropping the tag
+  // from either line is a violation even though everything else is fine.
+  const missingUpgradable = wellFormedExample.replace("8GB (Upgradable)", "8GB").replace("256GB (Upgradable)", "256GB");
+  assert.deepStrictEqual(
+    findViolations(missingUpgradable, structuredInput),
+    ['RAM spec line missing the required "(Upgradable)" tag', 'Storage spec line missing the required "(Upgradable)" tag'],
+    "RAM and Storage lines without the (Upgradable) tag must be flagged"
+  );
 
   const missingHeading = wellFormedExample.replace(/^###[^\n]*\n\n/, "");
   assert.ok(

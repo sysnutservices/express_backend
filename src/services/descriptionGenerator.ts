@@ -78,7 +78,7 @@ Output Markdown in exactly this shape:
 
 1. \`### {Brand} {Model} Refurbished Laptop – {Processor}, {RAM}, {Storage}, {Display}\` — one heading line naming the laptop and its headline specs, using only specs actually given (drop any part of that dash list you don't have data for; don't say "Refurbished" here unless the condition data confirms it).
 2. 2-3 short paragraphs (no sub-headings between them): what the laptop is and who it suits, real-world usage it actually supports, and what the specs mean for the buyer.
-3. \`### Key Specifications\` heading, then a bullet list, one spec per line, formatted \`* **Label:** value\` — only specs actually provided, not padded out.
+3. \`### Key Specifications\` heading, then a bullet list, one spec per line, formatted \`* **Label:** value\` — only specs actually provided, not padded out. Every LapShark listing's RAM and storage can be upgraded on request, so always append \` (Upgradable)\` to the RAM and Storage lines specifically (only those two lines) — e.g. \`* **RAM:** 8GB (Upgradable)\`.
 4. One short closing paragraph, no heading: a plain, practical reason to buy it. No recap of the whole description.
 
 ### Example (format only — write fresh, product-specific content every time, never reuse this wording)
@@ -95,8 +95,8 @@ The 8GB RAM is suitable for regular multitasking, while the 256GB storage provid
 ### Key Specifications
 
 * **Processor:** Intel Core i5 10th Generation
-* **RAM:** 8GB
-* **Storage:** 256GB
+* **RAM:** 8GB (Upgradable)
+* **Storage:** 256GB (Upgradable)
 * **Display:** 14-inch Full HD
 * **Operating System:** Windows 10
 * **Condition:** Refurbished
@@ -299,6 +299,18 @@ export function findViolations(text: string, input: ProductDescriptionInput): st
   // summary per product.
   if (!/^\s*###\s+\S/.test(text)) {
     violations.push('missing the required "### Title" opening heading');
+  }
+
+  // Every listing's RAM/storage is upgradable — the prompt's example shows
+  // this, but (like every other style rule here) that's a hope, not a
+  // guarantee, so it's enforced the same deterministic way. Only checked
+  // when the model actually wrote that bullet line (it's omitted entirely
+  // when the admin didn't supply that spec).
+  if (/\*\*ram:\*\*/i.test(text) && !/\*\*ram:\*\*[^\n]*upgradable/i.test(text)) {
+    violations.push('RAM spec line missing the required "(Upgradable)" tag');
+  }
+  if (/\*\*storage:\*\*/i.test(text) && !/\*\*storage:\*\*[^\n]*upgradable/i.test(text)) {
+    violations.push('Storage spec line missing the required "(Upgradable)" tag');
   }
 
   const words = wordCount(text);
