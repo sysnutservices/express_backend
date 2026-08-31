@@ -18,6 +18,7 @@ import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/w
 import { getCart, addToCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
 import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
 import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
+import { saveExtraOffer, removeExtraOffer } from '../controllers/extraOfferController';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -46,6 +47,10 @@ const uploadFields = upload.fields([
 router.route('/products').get(publicCache, getProducts).post(protect, admin, uploadFields, createProduct);
 router.route('/products/:id').get(publicCache, getProductById).put(protect, admin, uploadFields, updateProduct).delete(protect, admin, deleteProduct);
 router.route('/products/slug/:slug').get(publicCache, getProductBySlug);
+// Extra Product Offer — separate from the multipart product-update form so
+// an admin can save/remove a promotion without re-uploading images.
+router.put('/products/:id/extra-offer', protect, admin, saveExtraOffer);
+router.delete('/products/:id/extra-offer', protect, admin, removeExtraOffer);
 // Runs local background removal + studio compositing on a single picked
 // file (or an already-hosted URL, for reprocessing) and returns the hosted
 // result — manual only (the Reprocess button / retry click), never

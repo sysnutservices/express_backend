@@ -42,6 +42,13 @@ export interface IOrder extends Document {
     storage?: any; // ✅ ADD THIS
     warranty?: any; // ✅ ADD THIS
     selectedConfig?: any; // ✅ ADD THIS
+    // Extra Product Offer snapshot, frozen at order-creation time — never
+    // recomputed from the live product later, so an order stays accurate
+    // even after the offer expires or is edited/removed. Undefined on every
+    // order placed before this feature and on any item with no active offer.
+    originalPrice?: number;
+    extraOfferDiscount?: number;
+    extraOfferLabel?: string;
   }>;
   paidAt?: Date; // ✅ ADD THIS
   shipment?: {
@@ -132,6 +139,9 @@ const OrderSchema = new Schema(
         storage: { type: Object }, // ✅ ADD THIS
         warranty: { type: Object }, // ✅ ADD THIS
         selectedConfig: { type: Object }, // ✅ ADD THIS
+        originalPrice: { type: Number },
+        extraOfferDiscount: { type: Number },
+        extraOfferLabel: { type: String },
       },
     ],
   },
