@@ -13,6 +13,17 @@ import { calculateProductPrice } from "../utils/pricing";
 import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
+import { nextSeq } from "../models/Counter";
+
+// Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
+// order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
+// widget and Razorpay-side lookups). Per-day sequence, atomic via Counter's
+// $inc — never repeats even under concurrent checkouts.
+async function generateOrderId(): Promise<string> {
+  const dateKey = new Date().toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+  const seq = await nextSeq(`order-${dateKey}`);
+  return `LS-${dateKey}-${String(seq).padStart(2, "0")}`;
+}
 
 // Same landmine as services/imagekit.ts: Razorpay's constructor throws
 // synchronously on a missing key_id, and this module is required at server
@@ -198,7 +209,7 @@ export const createOrder = async (req: Request, res: Response) => {
 
     // ---- Save Order in DB ----
     const newOrder = await Order.create({
-      orderId: razorpayOrder.id,
+      orderId: await generateOrderId(),
       customerName,
       customerEmail,
       userId,
@@ -261,7 +272,7 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
   if (razorpaySignature) update.razorpaySignature = razorpaySignature;
 
   const order = await Order.findOneAndUpdate(
-    { orderId: razorpayOrderId, paymentStatus: { $ne: "Paid" } },
+    { razorpayOrderId, paymentStatus: { $ne: "Paid" } },
     update,
     { new: true }
   ).populate("userId");
@@ -270,7 +281,7 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     // Either no such order, or it was already marked Paid by whichever of
     // verifyPayment/the webhook got here first — side effects already ran
     // there either way, so this call is done.
-    return await Order.findOne({ orderId: razorpayOrderId });
+    return await Order.findOne({ razorpayOrderId });
   }
 
   const user = order.userId as any;
@@ -282,8 +293,10 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
   }
 
   if (customerPhone) {
-    await sendOrderConfirmation(customerPhone, customerName, razorpayOrderId);
-    await sendAdminOrderConfirmationPayload(customerName, customerPhone, razorpayOrderId, order.total as any, order.date as any);
+    // The human-readable order number (LS-YYYYMMDD-NN), not Razorpay's own
+    // order_xxxxxxxxxxxxxx id — that's what a customer should see/quote.
+    await sendOrderConfirmation(customerPhone, customerName, order.orderId);
+    await sendAdminOrderConfirmationPayload(customerName, customerPhone, order.orderId, order.total as any, order.date as any);
   }
 
   await notifyByKey("payment.success", {
