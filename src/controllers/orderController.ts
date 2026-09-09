@@ -5,7 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation } from "../services/wa";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation } from "../services/wa";
 import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
@@ -538,7 +538,11 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Invalid webhook signature" });
     }
 
-    const awb = req.body.awb || req.body.waybill;
+    // Real field names, per Ekart's track_updated webhook doc: `id` is
+    // their own tracking id (what we store as shipment.awb — same value
+    // createShipment's response mapped it from), `wbn` is the vendor
+    // waybill (a different, courier-internal number, not what we key on).
+    const awb = req.body.id;
     const courierStatus = req.body.status;
     const mappedStatus = EKART_STATUS_MAP[courierStatus];
 
@@ -549,13 +553,26 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
       };
       if (mappedStatus === "Delivered") update["shipment.deliveredAt"] = new Date();
 
-      const order = await Order.findOneAndUpdate({ "shipment.awb": awb }, update, { new: true });
+      // Same idempotency shape as markOrderPaid's paymentStatus guard: a
+      // repeat/duplicate Delivered event for an order already marked
+      // Delivered is a no-op instead of re-sending the WhatsApp message.
+      const filter: Record<string, unknown> = { "shipment.awb": awb };
+      if (mappedStatus === "Delivered") filter.status = { $ne: "Delivered" };
+
+      const order = await Order.findOneAndUpdate(filter, update, { new: true });
       if (order) {
         await notifyByKey("shipment.updated", {
           entityId: order.orderId,
           payload: { status: mappedStatus, awb },
           req,
         });
+        if (mappedStatus === "Delivered") {
+          try {
+            await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
+          } catch (waErr: any) {
+            console.error("Delivery confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
+          }
+        }
       }
     }
 
@@ -702,9 +719,22 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       }
     }
 
+    // Captured before the mutation below — only send on the actual
+    // transition into Delivered, not on a re-save that's already Delivered
+    // (matches shipmentWebhook's $ne guard for the same case).
+    const wasAlreadyDelivered = order.status === "Delivered";
+
     order.status = status;
     if (status === "Delivered" && order.shipment) order.shipment.deliveredAt = new Date();
     await order.save();
+
+    if (status === "Delivered" && !wasAlreadyDelivered) {
+      try {
+        await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
+      } catch (waErr: any) {
+        console.error("Delivery confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
+      }
+    }
 
     res.json({ success: true, order });
   } catch (err: any) {

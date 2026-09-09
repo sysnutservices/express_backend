@@ -29,6 +29,7 @@ const TEMPLATE_IDS = {
     // shipped! Tracking ID: {{3}}. Track here: {{4}}"), get it
     // Meta-approved, then set WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID.
     shipmentCreated: process.env.WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID,
+    delivered: process.env.WHATSAPP_SAAS_DELIVERED_TEMPLATE_ID,
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -143,6 +144,26 @@ export async function sendShipmentConfirmation(to: string, customerName: string,
         return await sendTemplate(TEMPLATE_IDS.shipmentCreated, to, [customerName, orderId, awb, trackingUrl]);
     } catch (error: any) {
         console.error("WhatsApp Shipment Confirmation Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Sent from orderController — both when an admin marks an order Delivered
+// by hand and when Ekart's own courier-status webhook reports it (whichever
+// happens first; both call sites guard on the order not already being
+// Delivered, so this only ever fires once per order).
+export async function sendDeliveryConfirmation(to: string, customerName: string, orderId: string) {
+    if (!TEMPLATE_IDS.delivered) {
+        console.warn(
+            "sendDeliveryConfirmation skipped: WHATSAPP_SAAS_DELIVERED_TEMPLATE_ID not set. " +
+            "The order was still marked Delivered — this only affects the WhatsApp notification."
+        );
+        return null;
+    }
+    try {
+        return await sendTemplate(TEMPLATE_IDS.delivered, to, [customerName, orderId]);
+    } catch (error: any) {
+        console.error("WhatsApp Delivery Confirmation Error:", error.response?.data || error);
         throw error;
     }
 }
