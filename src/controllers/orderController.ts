@@ -525,6 +525,13 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
     const secret = process.env.EKART_WEBHOOK_SECRET;
     const rawBody: Buffer | undefined = (req as any).rawBody;
 
+    // TEMPORARY — remove once a real event confirms the actual signature
+    // header/scheme. Ekart's webhook doc names no header, only that the
+    // registered `secret` "hashes the webhook post body ... for calculating
+    // h-mac" — logs every hit (still fail-closed below either way) so the
+    // first real event teaches us the true format instead of guessing again.
+    console.log("Ekart webhook received — headers:", JSON.stringify(req.headers), "body:", rawBody?.toString());
+
     if (!secret) {
       console.error("EKART_WEBHOOK_SECRET not configured — rejecting webhook");
       return res.status(500).json({ message: "Webhook not configured" });
