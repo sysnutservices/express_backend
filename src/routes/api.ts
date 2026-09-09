@@ -15,7 +15,7 @@ import { ingestEvent, getOverviewStats, getProductAnalytics, getVisitors, getVis
 import { createBlog, getAllBlogs, getAllBlogsAdmin, getBlogBySlug, updateBlog, deleteBlog } from '../controllers/blogController';
 import { getGalleryImages, galleryUpload, uploadGalleryImage, uploadMultipleGalleryImages, deleteGalleryImage } from '../controllers/galleryController';
 import { getWishlist, addToWishlist, removeFromWishlist } from '../controllers/wishlistController';
-import { getCart, addToCart, mergeGuestCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
+import { getCart, addToCart, mergeGuestCart, updateCartItem, removeCartItem, clearCart, getCartByWaId, getAllCart, getAllActiveCarts, notifiedCart, getAbandonedCartSettings, updateAbandonedCartSettings } from '../controllers/cartController';
 import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
 import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
 import { saveExtraOffer, removeExtraOffer } from '../controllers/extraOfferController';
@@ -172,6 +172,10 @@ router.post("/wishlist/add", protect, addToWishlist);
 router.delete("/wishlist/:productId", protect, removeFromWishlist);
 
 
+// Admin "Active Carts" page — every logged-in customer's non-empty cart,
+// not just the one internalOnly's /cart/all picks for the abandoned-cart
+// bot. Plural /carts so it doesn't collide with /cart (the caller's own).
+router.get("/carts", protect, admin, getAllActiveCarts);
 router.get("/cart", protect, getCart);
 router.post("/cart/add", protect, addToCart);
 // Called once right after login with whatever was in the guest's

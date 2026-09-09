@@ -5,6 +5,34 @@ import User from "../models/User";
 import AbandonedCart from "../models/AbandonedCartSettings";
 
 /* ======================
+   ADMIN: LIST ALL ACTIVE CARTS
+====================== */
+// Only logged-in customers' carts exist here at all — a guest's cart lives
+// in their own browser's localStorage (see CartContext) and is never
+// persisted server-side until they log in and mergeGuestCart runs, so a
+// browsing-but-not-logged-in visitor's cart is invisible to this by design,
+// not a bug. "items.0 exists" instead of items.length>0 so Mongo can use
+// the same simple existence check as an index later if this ever needs one.
+export const getAllActiveCarts = async (req: Request, res: Response) => {
+    const carts = await Cart.find({ "items.0": { $exists: true } })
+        .populate("userId", "name mobile email")
+        .sort({ updatedAt: -1 });
+
+    const result = carts.map((cart: any) => ({
+        cartId: cart._id,
+        customer: cart.userId
+            ? { id: cart.userId._id, name: cart.userId.name, mobile: cart.userId.mobile, email: cart.userId.email }
+            : null,
+        items: cart.items,
+        itemCount: cart.items.reduce((sum: number, i: any) => sum + (i.quantity || 1), 0),
+        total: cart.items.reduce((sum: number, i: any) => sum + (i.finalPrice || 0) * (i.quantity || 1), 0),
+        updatedAt: cart.updatedAt,
+    }));
+
+    res.json({ success: true, carts: result });
+};
+
+/* ======================
    GET CART
 ====================== */
 export const getCart = async (req: Request, res: Response) => {
