@@ -5,7 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation } from "../services/wa";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation } from "../services/wa";
 import { notifyByKey } from "../services/notifyByKey";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
@@ -678,6 +678,21 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
           trackingUrl: shipment.trackingUrl,
           shippedAt: new Date(),
         };
+
+        // Best-effort, same reasoning as the payment-confirmation WhatsApp
+        // sends: the shipment is already booked with Ekart at this point, so
+        // a WhatsApp delivery hiccup must not fail the status update itself.
+        try {
+          await sendShipmentConfirmation(
+            order.shippingAddress.phone,
+            order.customerName,
+            order.orderId,
+            shipment.awb,
+            shipment.trackingUrl || ""
+          );
+        } catch (waErr: any) {
+          console.error("Shipment confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
+        }
       } catch (shipErr: any) {
         console.error("Ekart shipment creation failed:", shipErr.response?.data || shipErr.message);
         return res.status(502).json({

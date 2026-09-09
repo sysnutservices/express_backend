@@ -24,6 +24,11 @@ const TEMPLATE_IDS = {
     // the template there (e.g. "New contact form message from {{1}} ({{2}}):
     // {{3}}"), get it Meta-approved, then set the id.
     adminContactAlert: process.env.WHATSAPP_SAAS_ADMIN_CONTACT_ALERT_TEMPLATE_ID,
+    // Same situation as adminContactAlert above — no template exists yet.
+    // Create one on chat.lapshark.com (e.g. "Hi {{1}}, your order {{2}} has
+    // shipped! Tracking ID: {{3}}. Track here: {{4}}"), get it
+    // Meta-approved, then set WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID.
+    shipmentCreated: process.env.WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID,
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -119,6 +124,25 @@ export async function sendAdminContactAlert(name: string, email: string, message
         return await sendTemplate(TEMPLATE_IDS.adminContactAlert, to, [name, email, truncated]);
     } catch (error: any) {
         console.error("WhatsApp Admin Contact Alert Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Sent from orderController.updateOrderStatus right after a courier
+// shipment is actually booked with Ekart — awb/trackingUrl are real values
+// from that response, not guesses.
+export async function sendShipmentConfirmation(to: string, customerName: string, orderId: string, awb: string, trackingUrl: string) {
+    if (!TEMPLATE_IDS.shipmentCreated) {
+        console.warn(
+            "sendShipmentConfirmation skipped: WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID not set. " +
+            "The shipment was still booked with Ekart — this only affects the WhatsApp notification."
+        );
+        return null;
+    }
+    try {
+        return await sendTemplate(TEMPLATE_IDS.shipmentCreated, to, [customerName, orderId, awb, trackingUrl]);
+    } catch (error: any) {
+        console.error("WhatsApp Shipment Confirmation Error:", error.response?.data || error);
         throw error;
     }
 }
