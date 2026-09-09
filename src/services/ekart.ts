@@ -164,7 +164,13 @@ export async function createShipment(order: {
       total_amount: order.total,
       cod_amount: isCOD ? order.codAmount : 0,
       consignee_name: order.customerName,
-      consignee_alternate_phone: String(phone),
+      // Confirmed live: Ekart rejects the request ("Phone and Alternate
+      // Phone cannot be same") if this matches drop_location.phone.
+      // Checkout only ever collects one number from the customer, so there
+      // is no genuine second number to send — the store's own support line
+      // is a real, legitimate fallback contact for the courier and is
+      // guaranteed to differ from the customer's number.
+      consignee_alternate_phone: String(tenDigitPhone(process.env.ADMIN_PHONE_NUMBER || "")),
       payment_mode: isCOD ? "COD" : "Prepaid",
       category_of_goods: "Electronics",
       products_desc: productsDesc,
