@@ -314,11 +314,25 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     await markCouponUsed(order.coupon);
   }
 
+  // Best-effort, like the BehaviorEvent/CAPI calls further down in this
+  // function: the order is already marked Paid above, so a WhatsApp
+  // delivery failure (rate limit, template issue, whatsapp-saas outage)
+  // must not fail this whole request — that used to propagate straight up
+  // to verifyPayment's catch, which returned 500 and showed the customer
+  // "Payment received, confirmation pending... contact support" even
+  // though the payment had already gone through and been recorded fine.
   if (customerPhone) {
-    // The human-readable order number (LS-YYYYMMDD-NN), not Razorpay's own
-    // order_xxxxxxxxxxxxxx id — that's what a customer should see/quote.
-    await sendOrderConfirmation(customerPhone, customerName, order.orderId);
-    await sendAdminOrderConfirmationPayload(customerName, customerPhone, order.orderId, order.total as any, order.date as any);
+    try {
+      // The human-readable order number (LS-YYYYMMDD-NN), not Razorpay's
+      // own order_xxxxxxxxxxxxxx id — that's what a customer should
+      // see/quote. order.total is a number — the whatsapp-saas API 400s
+      // ("each value in params must be a string") if it isn't stringified
+      // first, which is what was actually triggering this in practice.
+      await sendOrderConfirmation(customerPhone, customerName, order.orderId);
+      await sendAdminOrderConfirmationPayload(customerName, customerPhone, order.orderId, order.total.toLocaleString("en-IN"), order.date);
+    } catch (err: any) {
+      console.error("Order confirmation WhatsApp message(s) failed:", err.response?.data || err.message);
+    }
   }
 
   await notifyByKey("payment.success", {
