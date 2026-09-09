@@ -166,6 +166,11 @@ export const createOrder = async (req: Request, res: Response) => {
       });
     }
 
+    // Shipping eligibility is based on the item subtotal, same as the
+    // checkout page's own display calc — capture it before the coupon block
+    // below overwrites `total` with the discounted amount.
+    const itemSubtotal = total;
+
     // ---- Validate + Apply Coupon ----
     // Same rules (active/expiry/usage-limit/min-order-value/percentage-vs-
     // fixed) as the checkout "Apply Coupon" preview — this is the path that
@@ -182,6 +187,19 @@ export const createOrder = async (req: Request, res: Response) => {
       appliedCouponCode = couponResult.coupon!.code;
       total = couponResult.finalAmount;
     }
+
+    // ---- Shipping ----
+    // The checkout page shows "Subtotal + Shipping = Total" (₹500 flat under
+    // this threshold, free above it) but this total was never actually
+    // charged — createOrder only ever summed item prices, so every order
+    // was silently undercharged by the full shipping amount shown on
+    // screen. Same threshold as the checkout page; keep both in sync if it
+    // ever changes.
+    // ponytail: flat ₹500/free-over-₹10000, not configurable or per-pincode
+    // — make it a real shipping-rate lookup if that's ever needed.
+    const SHIPPING_THRESHOLD = 10000;
+    const shippingCost = itemSubtotal > SHIPPING_THRESHOLD ? 0 : 500;
+    total += shippingCost;
 
     // ---- COD advance ----
     // COD still runs through Razorpay for a small upfront amount — full cash
@@ -215,6 +233,7 @@ export const createOrder = async (req: Request, res: Response) => {
       userId,
       date: new Date().toISOString(),   // FIXED
       total,
+      shippingCost,
       advanceAmount,
       metaEventId: typeof metaEventId === "string" ? metaEventId : undefined,
       mapLink: mapLink,

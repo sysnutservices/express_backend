@@ -7,6 +7,11 @@ export interface IOrder extends Document {
   userId?: mongoose.Schema.Types.ObjectId;
   date: string;
   total: number;
+  // ₹500 flat under the free-shipping threshold, ₹0 above it — same rule
+  // the checkout page displays. Already folded into `total`; kept here too
+  // so admin/order-detail views can show the breakdown instead of a bare
+  // total that doesn't match "Subtotal + Shipping" on screen.
+  shippingCost: number;
   // COD orders charge this much upfront via Razorpay (to weed out
   // fake/careless COD orders) and leave (total - advanceAmount) to be
   // collected as cash by the courier. 0 for a fully-prepaid order.
@@ -89,6 +94,7 @@ const OrderSchema = new Schema(
     coupon: { type: String, default: null }, // ✅ ADD THIS
     date: { type: String, required: true },
     total: { type: Number, required: true },
+    shippingCost: { type: Number, default: 0 },
     advanceAmount: { type: Number, default: 0 },
     metaEventId: { type: String },
     mapLink: { type: String, default: "" },
