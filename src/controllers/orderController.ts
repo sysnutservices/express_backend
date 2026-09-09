@@ -14,9 +14,20 @@ import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 
+// Same landmine as services/imagekit.ts: Razorpay's constructor throws
+// synchronously on a missing key_id, and this module is required at server
+// startup (routes/api.ts), so a blank/missing RAZORPAY_KEY has twice now
+// taken down the entire API — login, browsing, admin panel, everything, not
+// just checkout — in a crash-restart loop. Placeholder fallback keeps
+// construction from throwing; the actual checkout/refund calls that need a
+// real key still fail normally (caught in their own route handlers) if this
+// was never really configured.
+if (!process.env.RAZORPAY_KEY || !process.env.RAZORPAY_SECRET) {
+  console.error("RAZORPAY_KEY/RAZORPAY_SECRET not set — checkout and refunds will fail until configured, but the rest of the API stays up.");
+}
 const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY!,
-  key_secret: process.env.RAZORPAY_SECRET!,
+  key_id: process.env.RAZORPAY_KEY || "rzp_unconfigured",
+  key_secret: process.env.RAZORPAY_SECRET || "unconfigured",
 });
 
 

@@ -3,10 +3,23 @@ import dotenv from "dotenv";
 import slugify from "slugify";
 import sharp from "sharp";
 dotenv.config();
+
+// ImageKit's constructor throws synchronously on a missing key, and this
+// module is required at server startup (product/gallery image routes), so a
+// blank/missing IMAGEKIT_* var used to take the entire API — login, orders,
+// everything — down in a crash-restart loop, not just image uploads.
+// Falling back to placeholder values keeps construction from throwing;
+// actual upload/listFiles/deleteFile calls still fail normally (caught by
+// their own route handlers) if these were never really configured.
+// ponytail: logs to stderr only, no admin-panel banner for "images
+// misconfigured" — add one if this starts going unnoticed in practice.
+if (!process.env.IMAGEKIT_PUBLIC_KEY || !process.env.IMAGEKIT_PRIVATE_KEY || !process.env.IMAGEKIT_URL_ENDPOINT) {
+    console.error("IMAGEKIT_PUBLIC_KEY/IMAGEKIT_PRIVATE_KEY/IMAGEKIT_URL_ENDPOINT not set — image upload/gallery features will fail until configured, but the rest of the API stays up.");
+}
 export const imagekit = new ImageKit({
-    publicKey: process.env.IMAGEKIT_PUBLIC_KEY!,
-    privateKey: process.env.IMAGEKIT_PRIVATE_KEY!,
-    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT!
+    publicKey: process.env.IMAGEKIT_PUBLIC_KEY || "unconfigured",
+    privateKey: process.env.IMAGEKIT_PRIVATE_KEY || "unconfigured",
+    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT || "https://ik.imagekit.io/unconfigured"
 });
 
 // SEO-friendly file names: "dell-latitude-5400-i5-8gb.jpg" beats
