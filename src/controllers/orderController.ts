@@ -189,16 +189,19 @@ export const createOrder = async (req: Request, res: Response) => {
     }
 
     // ---- Shipping ----
-    // The checkout page shows "Subtotal + Shipping = Total" (₹500 flat under
-    // this threshold, free above it) but this total was never actually
-    // charged — createOrder only ever summed item prices, so every order
-    // was silently undercharged by the full shipping amount shown on
-    // screen. Same threshold as the checkout page; keep both in sync if it
-    // ever changes.
-    // ponytail: flat ₹500/free-over-₹10000, not configurable or per-pincode
-    // — make it a real shipping-rate lookup if that's ever needed.
+    // This is the authoritative copy — what's actually charged. The
+    // frontend's matching copy (display only) lives in one place, Lapshark's
+    // lib/pricing.ts (SHIPPING_THRESHOLD/getShippingCost), shared by Cart
+    // and Checkout instead of each hardcoding it — separate repos/runtimes,
+    // so a literal shared module isn't possible; keep both in sync by hand
+    // if the rate/threshold ever changes. (createOrder didn't charge
+    // shipping at all until this was added — every order was silently
+    // undercharged by the full amount checkout displayed.)
+    // ponytail: flat rate/threshold, not configurable or per-pincode — make
+    // it a real shipping-rate lookup if that's ever needed.
     const SHIPPING_THRESHOLD = 10000;
-    const shippingCost = itemSubtotal > SHIPPING_THRESHOLD ? 0 : 500;
+    const SHIPPING_FLAT_RATE = 500;
+    const shippingCost = itemSubtotal > SHIPPING_THRESHOLD ? 0 : SHIPPING_FLAT_RATE;
     total += shippingCost;
 
     // ---- COD advance ----
