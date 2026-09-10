@@ -219,8 +219,12 @@ export const updateProduct = async (req: Request, res: Response) => {
         titleHint
       );
       product.image = uploadResult.url;
-    } else if (req.body.imageUrl) {
+    } else if (req.body.imageUrl && req.body.imageUrl !== product.image) {
       // URL-based main image — same CRM sync use case as createProduct above.
+      // Skipped when it's already the live URL: every CRM sync resends the
+      // same already-hosted ImageKit URL unchanged, and re-fetching +
+      // re-uploading it on every sync (times every product, times every
+      // sync click) is what was timing out the whole "Sync to lapshark" call.
       const uploaded = await uploadUrlToImageKit(req.body.imageUrl, "/lapshark/products", titleHint);
       product.image = uploaded.url;
     }
@@ -259,8 +263,12 @@ export const updateProduct = async (req: Request, res: Response) => {
     }
     if (req.body.imageUrls) {
       // URL-based gallery images — same CRM sync use case as createProduct.
+      // Only genuinely new URLs get re-uploaded; ones already in
+      // galleryImages (unchanged since last sync) are left alone — same
+      // "don't redo already-hosted images" reasoning as the main image above.
       const urls: string[] = typeof req.body.imageUrls === 'string' ? JSON.parse(req.body.imageUrls) : req.body.imageUrls;
-      const uploadedGallery = await Promise.all(urls.map((u, i) => uploadUrlToImageKit(u, "/lapshark/products/gallery", `${titleHint} ${galleryImages.length + i + 1}`)));
+      const newUrls = urls.filter((u) => !galleryImages.includes(u));
+      const uploadedGallery = await Promise.all(newUrls.map((u, i) => uploadUrlToImageKit(u, "/lapshark/products/gallery", `${titleHint} ${galleryImages.length + i + 1}`)));
       galleryImages = [...galleryImages, ...uploadedGallery.map((r) => r.url)];
     }
 
