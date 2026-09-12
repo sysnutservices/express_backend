@@ -54,6 +54,8 @@ export interface IOrder extends Document {
     originalPrice?: number;
     extraOfferDiscount?: number;
     extraOfferLabel?: string;
+    // Not set anywhere yet — see the schema field's comment below.
+    serialNumber?: string;
   }>;
   paidAt?: Date; // ✅ ADD THIS
   shipment?: {
@@ -148,6 +150,10 @@ const OrderSchema = new Schema(
         originalPrice: { type: Number },
         extraOfferDiscount: { type: Number },
         extraOfferLabel: { type: String },
+        // Not set anywhere yet — no admin flow captures it. Present so the
+        // warranty card can show the real serial once one exists, instead
+        // of that becoming a second schema migration later.
+        serialNumber: { type: String },
       },
     ],
   },
