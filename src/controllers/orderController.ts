@@ -782,10 +782,18 @@ export const setItemSerialNumber = async (req: Request, res: Response) => {
 
     // Narrow candidates via the DB (cheap — this exact serial is rare), then
     // let the pure helper decide precisely which item actually owns it.
-    const candidates = await Order.find({ "items.serialNumber": serialNumber })
+    // .lean() leaves each item's _id as a real ObjectId, not a string — has
+    // to be stringified here or it can never string-equal itemId (which
+    // comes from the URL as a string), making every match look like a
+    // conflict, including a same-item re-save of its own unchanged value.
+    const rawCandidates = await Order.find({ "items.serialNumber": serialNumber })
       .select("orderId items._id items.serialNumber")
       .lean();
-    const conflictOrderId = findSerialConflict(candidates as any, serialNumber, order.orderId, itemId);
+    const candidates = rawCandidates.map((o: any) => ({
+      orderId: o.orderId,
+      items: o.items.map((it: any) => ({ _id: it._id?.toString(), serialNumber: it.serialNumber })),
+    }));
+    const conflictOrderId = findSerialConflict(candidates, serialNumber, order.orderId, itemId);
     if (conflictOrderId) {
       return res.status(409).json({
         success: false,
