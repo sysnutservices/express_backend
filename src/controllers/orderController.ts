@@ -14,6 +14,7 @@ import * as ekart from "../services/ekart";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 import { nextSeq } from "../models/Counter";
+import { normalizeSerialNumber, findSerialConflict } from "../utils/serialNumber";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -749,6 +750,57 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
   }
 };
 
+// =========================================================
+// Order-item serial number — set during fulfillment/dispatch, not at order
+// creation (a real unit isn't picked/assigned to the order yet at checkout
+// time). Addressed by the item subdocument's own Mongoose _id rather than
+// array index, since index isn't stable to rely on as an identifier.
+// Overwrite protection is deliberately left to the admin UI (it requires an
+// explicit "Edit" action before an already-assigned field becomes
+// submittable again) rather than a second confirmation flag here — this
+// endpoint itself will happily replace an existing value if called, exactly
+// like updateOrderStatus already does for order.status.
+// =========================================================
+export const setItemSerialNumber = async (req: Request, res: Response) => {
+  try {
+    const { id, itemId } = req.params; // id = orderId (human), not _id
+    const serialNumber = normalizeSerialNumber(req.body.serialNumber);
+
+    if (!serialNumber) {
+      return res.status(400).json({ success: false, message: "Serial number is required" });
+    }
+
+    const order = await Order.findOne({ orderId: id });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    const item = (order.items as any).id(itemId);
+    if (!item) {
+      return res.status(404).json({ success: false, message: "Order item not found" });
+    }
+
+    // Narrow candidates via the DB (cheap — this exact serial is rare), then
+    // let the pure helper decide precisely which item actually owns it.
+    const candidates = await Order.find({ "items.serialNumber": serialNumber })
+      .select("orderId items._id items.serialNumber")
+      .lean();
+    const conflictOrderId = findSerialConflict(candidates as any, serialNumber, order.orderId, itemId);
+    if (conflictOrderId) {
+      return res.status(409).json({
+        success: false,
+        message: `Serial number ${serialNumber} is already assigned to order ${conflictOrderId}`,
+      });
+    }
+
+    item.serialNumber = serialNumber;
+    await order.save();
+
+    res.json({ success: true, order });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
 
 // =========================================================
 // 7️⃣ CANCEL ORDER
