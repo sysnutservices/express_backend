@@ -307,7 +307,7 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
   }
 
   const user = order.userId as any;
-  const customerName = user?.name;
+  const customerName = order.customerName || user?.name;
   const customerPhone = user?.mobile;
 
   if (order.coupon) {
