@@ -152,6 +152,7 @@ export const createOrder = async (req: Request, res: Response) => {
         storage: storageOption,
         warranty: warrantyOption,
         selectedConfig: item.config,
+        specs: product.specs,
         originalPrice: priced.offer ? priced.sellingPrice + configCost : undefined,
         extraOfferDiscount: priced.offer?.discountAmount,
         extraOfferLabel: priced.offer?.offerLabel,

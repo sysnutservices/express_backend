@@ -47,6 +47,12 @@ export interface IOrder extends Document {
     storage?: any; // ✅ ADD THIS
     warranty?: any; // ✅ ADD THIS
     selectedConfig?: any; // ✅ ADD THIS
+    // Product.specs snapshot, frozen at order-creation time like storage/
+    // warranty above — undefined on every order placed before this field
+    // existed. Not re-derived from the live product later: a spec sheet
+    // that could silently change after purchase would be wrong on a
+    // warranty document describing what was actually bought.
+    specs?: { processor?: string; ram?: string; storage?: string; display?: string; graphics?: string; os?: string };
     // Extra Product Offer snapshot, frozen at order-creation time — never
     // recomputed from the live product later, so an order stays accurate
     // even after the offer expires or is edited/removed. Undefined on every
@@ -147,6 +153,7 @@ const OrderSchema = new Schema(
         storage: { type: Object }, // ✅ ADD THIS
         warranty: { type: Object }, // ✅ ADD THIS
         selectedConfig: { type: Object }, // ✅ ADD THIS
+        specs: { type: Object },
         originalPrice: { type: Number },
         extraOfferDiscount: { type: Number },
         extraOfferLabel: { type: String },
