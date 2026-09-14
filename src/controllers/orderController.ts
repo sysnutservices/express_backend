@@ -5,8 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation } from "../services/wa";
-import { notifyByKey } from "../services/notifyByKey";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected } from "../services/wa";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import { calculateProductPrice } from "../utils/pricing";
@@ -338,12 +337,6 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     }
   }
 
-  await notifyByKey("payment.success", {
-    entityId: order.orderId,
-    payload: { amount: order.total, paymentId: razorpayPaymentId },
-    req,
-  });
-
   // Server-side `purchase` tracking event — this branch only runs once per
   // order (the findOneAndUpdate guard above), whether verifyPayment or the
   // webhook got here first, so it inherits that idempotency for free rather
@@ -589,11 +582,6 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
 
       const order = await Order.findOneAndUpdate(filter, update, { new: true });
       if (order) {
-        await notifyByKey("shipment.updated", {
-          entityId: order.orderId,
-          payload: { status: mappedStatus, awb },
-          req,
-        });
         if (mappedStatus === "Delivered") {
           try {
             await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
@@ -886,9 +874,9 @@ export const cancelOrder = async (req: Request, res: Response) => {
       await order.save();
 
       try {
-        await notifyByKey("cancellation.requested", { entityId: order.orderId, payload: { reason }, req });
+        await sendCancellationRequested(order.shippingAddress.phone, order.customerName, order.orderId);
       } catch (err: any) {
-        console.error("cancellation.requested notify failed:", err.message);
+        console.error("Cancellation requested WhatsApp message failed:", err.response?.data || err.message);
       }
 
       return res.json({ success: true, order });
@@ -977,10 +965,17 @@ export const cancelOrder = async (req: Request, res: Response) => {
     if (req.body.note) claimed.cancellation = { ...(claimed.cancellation as any), note: String(req.body.note).trim().slice(0, 1000) };
     await claimed.save();
 
-    try {
-      await notifyByKey("cancellation.approved", { entityId: claimed.orderId, payload: { refundStatus: claimed.refund?.status }, req });
-    } catch (err: any) {
-      console.error("cancellation.approved notify failed:", err.message);
+    // Only sent when a refund was actually initiated (has a real amount) —
+    // the template names an amount, so an unpaid order or a failed refund
+    // attempt (claimed.refund = { status: "failed" }, no amount) must not
+    // send a message claiming a refund was initiated. The order details
+    // page shows the accurate state either way; this is a best-effort extra.
+    if (claimed.refund?.amount) {
+      try {
+        await sendCancellationApproved(claimed.shippingAddress.phone, claimed.customerName, claimed.orderId, claimed.refund.amount.toLocaleString("en-IN"));
+      } catch (err: any) {
+        console.error("Cancellation approved WhatsApp message failed:", err.response?.data || err.message);
+      }
     }
 
     res.json({ success: true, order: claimed });
@@ -1022,9 +1017,9 @@ export const rejectCancellation = async (req: Request, res: Response) => {
     }
 
     try {
-      await notifyByKey("cancellation.rejected", { entityId: order.orderId, payload: { reason: rejectionReason }, req });
+      await sendCancellationRejected(order.shippingAddress.phone, order.customerName, order.orderId);
     } catch (err: any) {
-      console.error("cancellation.rejected notify failed:", err.message);
+      console.error("Cancellation rejected WhatsApp message failed:", err.response?.data || err.message);
     }
 
     res.json({ success: true, order });

@@ -30,6 +30,13 @@ const TEMPLATE_IDS = {
     // Meta-approved, then set WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID.
     shipmentCreated: process.env.WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID,
     delivered: process.env.WHATSAPP_SAAS_DELIVERED_TEMPLATE_ID,
+    // Created on chat.lapshark.com and submitted to Meta 2026-09-14 (status
+    // PENDING review at that time) — real default ids, same as
+    // orderConfirmation/adminOrderAlert above, not the "no template yet"
+    // pattern shipmentCreated/delivered use.
+    cancellationRequested: process.env.WHATSAPP_SAAS_CANCELLATION_REQUESTED_TEMPLATE_ID || "933b5e2c-9a82-4236-a8b0-282c0d97ff4d",
+    cancellationApproved: process.env.WHATSAPP_SAAS_CANCELLATION_APPROVED_TEMPLATE_ID || "408d64b4-03a7-4977-9a48-fb81745e1794",
+    cancellationRejected: process.env.WHATSAPP_SAAS_CANCELLATION_REJECTED_TEMPLATE_ID || "9ca51b0e-bcc3-42ca-b925-1e0a4e9332d9",
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -164,6 +171,40 @@ export async function sendDeliveryConfirmation(to: string, customerName: string,
         return await sendTemplate(TEMPLATE_IDS.delivered, to, [customerName, orderId]);
     } catch (error: any) {
         console.error("WhatsApp Delivery Confirmation Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Sent from orderController.cancelOrder when a customer submits a
+// cancellation request — explicitly says no refund yet, matching the
+// non-negotiable request-then-admin-approval rule this endpoint enforces.
+export async function sendCancellationRequested(to: string, customerName: string, orderId: string) {
+    try {
+        return await sendTemplate(TEMPLATE_IDS.cancellationRequested, to, [customerName, orderId]);
+    } catch (error: any) {
+        console.error("WhatsApp Cancellation Requested Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Sent from orderController.cancelOrder's admin-approve branch, after the
+// refund has actually been created — refundAmount is what Razorpay's
+// response confirmed, not the order total.
+export async function sendCancellationApproved(to: string, customerName: string, orderId: string, refundAmount: string) {
+    try {
+        return await sendTemplate(TEMPLATE_IDS.cancellationApproved, to, [customerName, orderId, refundAmount]);
+    } catch (error: any) {
+        console.error("WhatsApp Cancellation Approved Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Sent from orderController.rejectCancellation.
+export async function sendCancellationRejected(to: string, customerName: string, orderId: string) {
+    try {
+        return await sendTemplate(TEMPLATE_IDS.cancellationRejected, to, [customerName, orderId]);
+    } catch (error: any) {
+        console.error("WhatsApp Cancellation Rejected Error:", error.response?.data || error);
         throw error;
     }
 }
