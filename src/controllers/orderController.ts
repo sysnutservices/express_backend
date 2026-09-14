@@ -15,6 +15,7 @@ import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 import { nextSeq } from "../models/Counter";
 import { normalizeSerialNumber, findSerialConflict } from "../utils/serialNumber";
 import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_STATUSES } from "../utils/cancellation";
+import { logAdminAction } from "../models/AuditLog";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -965,6 +966,14 @@ export const cancelOrder = async (req: Request, res: Response) => {
     if (req.body.note) claimed.cancellation = { ...(claimed.cancellation as any), note: String(req.body.note).trim().slice(0, 1000) };
     await claimed.save();
 
+    logAdminAction({
+      actorId: reqUser.id,
+      actor: reqUser.name || "admin",
+      action: hasPendingRequest ? "order.cancel.approve" : "order.cancel.admin_direct",
+      targetType: "Order",
+      targetId: claimed.orderId,
+    });
+
     // Only sent when a refund was actually initiated (has a real amount) —
     // the template names an amount, so an unpaid order or a failed refund
     // attempt (claimed.refund = { status: "failed" }, no amount) must not
@@ -1015,6 +1024,14 @@ export const rejectCancellation = async (req: Request, res: Response) => {
         code: exists ? "CANCELLATION_NOT_PENDING" : "ORDER_NOT_FOUND",
       });
     }
+
+    logAdminAction({
+      actorId: reqUser.id,
+      actor: reqUser.name || "admin",
+      action: "order.cancel.reject",
+      targetType: "Order",
+      targetId: order.orderId,
+    });
 
     try {
       await sendCancellationRejected(order.shippingAddress.phone, order.customerName, order.orderId);

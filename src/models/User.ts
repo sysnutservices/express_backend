@@ -46,7 +46,10 @@ export const AddressSchema = new Schema<Address>(
 const UserSchema: Schema = new Schema({
   name: { type: String },
   email: { type: String, unique: true, sparse: true },
-  password: { type: String },
+  // Excluded from every query by default (adminLogin explicitly opts back
+  // in with .select('+password')) — closes a leak where GET /users
+  // (protect+admin, but still) returned every bcrypt hash to the client.
+  password: { type: String, select: false },
   role: { type: String, enum: ['admin', 'customer'], default: 'customer' },
   phone: { type: String },
   mobile: { type: String, required: true, unique: true },

@@ -113,7 +113,7 @@ export const ingestEvent = async (req: Request, res: Response) => {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith("Bearer ")) {
       try {
-        const decoded: any = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET as string);
+        const decoded: any = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET as string, { algorithms: ['HS256'] });
         if (decoded?.id) userId = decoded.id;
       } catch {
         // Swallowed on purpose — analytics isn't a security boundary.
