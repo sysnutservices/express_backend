@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import Order from '../models/Order';
 import Product from '../models/Product';
 import SiteConfig from '../models/SiteConfig';
+import AuditLog from '../models/AuditLog';
 
 export const getDashboardStats = async (req: Request, res: Response) => {
   try {
@@ -19,6 +20,15 @@ export const getDashboardStats = async (req: Request, res: Response) => {
       totalProducts,
       lowStockCount
     });
+  } catch (error) {
+    res.status(500).json({ message: 'Server Error' });
+  }
+};
+
+export const getAuditLog = async (req: Request, res: Response) => {
+  try {
+    const logs = await AuditLog.find({}).sort({ createdAt: -1 }).limit(100);
+    res.json(logs);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
   }

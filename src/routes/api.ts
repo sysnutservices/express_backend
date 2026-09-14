@@ -8,7 +8,8 @@ import {
 } from '../controllers/productImageController';
 import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
 import { getUsers, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
-import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
+import { getDashboardStats, getSiteConfig, updateSiteConfig, getAuditLog } from '../controllers/adminController';
+import { authLimiter, otpSendLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
 import { createCoupon, deleteCoupon, getCoupons, updateCoupon, validateCoupon } from '../controllers/couponController';
 import { ingestEvent, getOverviewStats, getProductAnalytics, getVisitors, getVisitorJourney } from '../controllers/analyticsController';
@@ -124,9 +125,9 @@ router.post("/orders/shipment-webhook", shipmentWebhook);
 router.get('/site-config', publicCache, getSiteConfig);
 
 // Users
-router.post('/users/login', customerLogin);
-router.post('/users/otp', sendOTP);
-router.post('/users/admin/login', adminLogin);
+router.post('/users/login', otpVerifyLimiter, customerLogin);
+router.post('/users/otp', otpSendLimiter, sendOTP);
+router.post('/users/admin/login', authLimiter, adminLogin);
 router.get('/users', protect, admin, getUsers);
 router.route('/users/:id/block').put(protect, admin, blockUser);
 router.post('/users/:id/force-logout', protect, admin, forceLogoutUser);
@@ -156,6 +157,7 @@ router.get('/admin/analytics/visitors', protect, admin, getVisitors);
 router.get('/admin/analytics/visitors/:visitorId', protect, admin, getVisitorJourney);
 // Admin / Site Config
 router.get('/admin/stats', protect, admin, getDashboardStats);
+router.get('/admin/audit-log', protect, admin, getAuditLog);
 router.route('/admin/site-config').get(getSiteConfig).put(protect, admin, updateSiteConfig);
 
 // Writes are admin-only: these were previously open, so anyone could publish or

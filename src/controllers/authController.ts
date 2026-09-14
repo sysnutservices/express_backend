@@ -4,8 +4,15 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { sendOtp } from '../services/wa';
+import { logAdminAction } from '../models/AuditLog';
 
-const generateToken = (user: { id: string; name: string; role: string; tokenVersion: number }) => {
+// expiresIn defaults to the customer session length so customerLogin's call
+// site needs no changes — adminLogin passes a much shorter one below, since
+// a leaked admin token is a higher-value target than a leaked customer one.
+const generateToken = (
+  user: { id: string; name: string; role: string; tokenVersion: number },
+  expiresIn: jwt.SignOptions["expiresIn"] = "30d"
+) => {
   return jwt.sign(
     {
       id: user.id,
@@ -14,7 +21,7 @@ const generateToken = (user: { id: string; name: string; role: string; tokenVers
       tokenVersion: user.tokenVersion,
     },
     process.env.JWT_SECRET as string,
-    { expiresIn: "30d" }
+    { expiresIn, algorithm: "HS256" }
   );
 };
 
@@ -38,8 +45,6 @@ export const sendOTP = async (req: Request, res: Response) => {
 
   await sendOtp(mobile, otp);
 
-  console.log(`OTP for ${mobile}: ${otp}`);
-
   res.json({
     message: 'OTP sent successfully',
     mobile
@@ -49,8 +54,10 @@ export const sendOTP = async (req: Request, res: Response) => {
 export const customerLogin = async (req: Request, res: Response) => {
   const { mobile, otp } = req.body;
 
-  // Validate input
-  if (!mobile || !otp) {
+  // Validate input (also guards against a non-string body field being
+  // passed straight into a Mongo query further down — see User.findOne
+  // below and adminLogin's matching guard).
+  if (typeof mobile !== 'string' || typeof otp !== 'string' || !mobile || !otp) {
     return res.status(400).json({ message: 'Mobile and OTP are required' });
   }
 
@@ -108,31 +115,39 @@ export const customerLogin = async (req: Request, res: Response) => {
   });
 };
 
+// Fixed bcrypt hash of a string nobody will ever type. Compared against on
+// every "no such user" attempt so bcrypt.compare always runs and always
+// takes real bcrypt time — response time (and, below, response shape) no
+// longer lets an attacker tell "no such email" apart from "wrong password",
+// which is what made this endpoint an account-enumeration oracle before.
+const DUMMY_PASSWORD_HASH = "$2b$10$G1gC4w6oyCdJJr8bN5UKue5Wo6dl1nNXpQO5XUidmF3rwDQ6iDa2u";
+
 export const adminLogin = async (req: Request, res: Response) => {
   const { email, password } = req.body;
-  console.log(`[DEBUG adminLogin] email="${email}" passwordLen=${password ? password.length : 0}`);
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required' });
+  if (typeof email !== "string" || typeof password !== "string" || !email || !password) {
+    return res.status(400).json({ message: "Email and password are required" });
   }
 
-  const user = await User.findOne({ email });
-  if (!user) {
-    console.log(`[DEBUG adminLogin] no user found for email="${email}"`);
-    return res.status(404).json({ message: 'User not found' });
-  }
+  const user = await User.findOne({ email }).select("+password"); // password is select:false on the schema
+  const passwordMatch = await bcrypt.compare(password, user?.password || DUMMY_PASSWORD_HASH);
 
-  const passwordMatch = await bcrypt.compare(password, user.password as string);
-  console.log(`[DEBUG adminLogin] passwordMatch=${passwordMatch} for email="${email}"`);
-  if (!passwordMatch) {
-    return res.status(401).json({ message: 'Invalid password' });
+  if (!user || !passwordMatch) {
+    logAdminAction({ actor: email, action: "admin.login.failure" });
+    return res.status(401).json({ message: "Invalid email or password" });
   }
 
   // This issues a role: "admin" token below unconditionally — without this
   // check, any user record with a matching email+password (not just real
-  // admins) would get one, regardless of their actual role in the DB.
-  if (user.role !== 'admin') {
-    return res.status(403).json({ message: 'Not authorized as admin' });
+  // admins) would get one, regardless of their actual role in the DB. Left
+  // as its own distinct response (not folded into the generic 401 above):
+  // it only fires after a real password match against a real hash, so it
+  // doesn't hand an attacker the same enumeration signal the 404/401 split
+  // used to.
+  if (user.role !== "admin") {
+    return res.status(403).json({ message: "Not authorized as admin" });
   }
+
+  logAdminAction({ actorId: user._id.toString(), actor: user.name || email, action: "admin.login.success" });
 
   return res.json({
     user: {
@@ -140,12 +155,15 @@ export const adminLogin = async (req: Request, res: Response) => {
       name: user.name,
       mobile: user.mobile,
     },
-    token: generateToken({
-      id: user._id.toString(),
-      name: user.name || "",
-      role: "admin",
-      tokenVersion: user.tokenVersion || 0
-    })
+    token: generateToken(
+      {
+        id: user._id.toString(),
+        name: user.name || "",
+        role: "admin",
+        tokenVersion: user.tokenVersion || 0
+      },
+      "12h" // shorter than the 30d customer default — see generateToken's comment
+    )
 
   });
 };
@@ -160,6 +178,14 @@ export const blockUser = async (req: Request, res: Response) => {
   if (user) {
     user.status = user.status === 'blocked' ? 'active' : 'blocked';
     await user.save();
+    const actor = (req as any).user;
+    logAdminAction({
+      actorId: actor?.id,
+      actor: actor?.name || 'admin',
+      action: user.status === 'blocked' ? 'user.block' : 'user.unblock',
+      targetType: 'User',
+      targetId: user._id.toString(),
+    });
     res.json(user);
   } else {
     res.status(404).json({ message: 'User not found' });
@@ -177,6 +203,14 @@ export const forceLogoutUser = async (req: Request, res: Response) => {
     { new: true }
   );
   if (user) {
+    const actor = (req as any).user;
+    logAdminAction({
+      actorId: actor?.id,
+      actor: actor?.name || 'admin',
+      action: 'user.force_logout',
+      targetType: 'User',
+      targetId: user._id.toString(),
+    });
     res.json({ success: true, tokenVersion: user.tokenVersion });
   } else {
     res.status(404).json({ message: 'User not found' });
