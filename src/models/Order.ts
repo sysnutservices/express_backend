@@ -78,6 +78,23 @@ export interface IOrder extends Document {
     status?: string; // Razorpay's 'pending' | 'processed' | 'failed'
     refundedAt?: Date;
   };
+  // Customer request -> admin approve/reject workflow. Absent entirely on
+  // every order until a cancellation is first requested. This doubles as
+  // the audit trail for the cancellation lifecycle (who/when/why) — the
+  // codebase has no generic audit-log system to plug into, and this mirrors
+  // the same embedded-object shape already used for refund/shipment above.
+  cancellation?: {
+    status: string; // 'Requested' | 'Approved' | 'Rejected'
+    reason?: string; // one of CANCELLATION_REASONS (src/utils/cancellation.ts)
+    note?: string; // customer's free-text note
+    requestedAt?: Date;
+    requestedBy?: mongoose.Schema.Types.ObjectId;
+    approvedAt?: Date;
+    approvedBy?: mongoose.Schema.Types.ObjectId;
+    rejectedAt?: Date;
+    rejectedBy?: mongoose.Schema.Types.ObjectId;
+    rejectionReason?: string;
+  };
 }
 
 const AddressSubSchema = new Schema(
@@ -131,6 +148,19 @@ const OrderSchema = new Schema(
       amount: { type: Number },
       status: { type: String },
       refundedAt: { type: Date },
+    },
+
+    cancellation: {
+      status: { type: String, enum: ["Requested", "Approved", "Rejected"] },
+      reason: { type: String },
+      note: { type: String },
+      requestedAt: { type: Date },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      approvedAt: { type: Date },
+      approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      rejectedAt: { type: Date },
+      rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+      rejectionReason: { type: String },
     },
 
     paymentStatus: {

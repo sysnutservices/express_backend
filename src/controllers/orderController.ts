@@ -15,6 +15,7 @@ import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 import { nextSeq } from "../models/Counter";
 import { normalizeSerialNumber, findSerialConflict } from "../utils/serialNumber";
+import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_STATUSES } from "../utils/cancellation";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -491,6 +492,24 @@ export const razorpayWebhook = async (req: Request, res: Response) => {
       }
     }
 
+    // Cancellation-approval refunds (see cancelOrder) are created
+    // synchronously and their initial status stored right away, but that's
+    // only Razorpay's *accepted* status, not confirmation the money actually
+    // moved — this reconciles it. Looked up by the refund id we stored
+    // ourselves, never by anything the webhook payload says about the order,
+    // so a forged/replayed webhook can't be pointed at an arbitrary order.
+    if (event === "refund.processed" || event === "refund.failed") {
+      const refundId = req.body.payload?.refund?.entity?.id;
+      if (refundId) {
+        const status = event === "refund.processed" ? "processed" : "failed";
+        const updated = await Order.findOneAndUpdate(
+          { "refund.id": refundId },
+          { $set: { "refund.status": status, ...(status === "processed" ? { paymentStatus: "Refunded" } : {}) } }
+        );
+        if (!updated) console.warn(`refund webhook: no order found for refund.id ${refundId}`);
+      }
+    }
+
     // Razorpay expects a fast 2xx for any event we don't act on too —
     // otherwise it retries the same delivery on a backoff schedule.
     return res.status(200).json({ received: true });
@@ -787,7 +806,10 @@ export const setItemSerialNumber = async (req: Request, res: Response) => {
     // to be stringified here or it can never string-equal itemId (which
     // comes from the URL as a string), making every match look like a
     // conflict, including a same-item re-save of its own unchanged value.
-    const rawCandidates = await Order.find({ "items.serialNumber": serialNumber })
+    // Excludes cancelled orders: their serial assignment is historical, not
+    // a live conflict — this is the entire "release" step for a serialized
+    // unit on cancellation, no separate reservation system exists to update.
+    const rawCandidates = await Order.find({ "items.serialNumber": serialNumber, status: { $ne: "Cancelled" } })
       .select("orderId items._id items.serialNumber")
       .lean();
     const candidates = rawCandidates.map((o: any) => ({
@@ -814,27 +836,111 @@ export const setItemSerialNumber = async (req: Request, res: Response) => {
 // =========================================================
 // 7️⃣ CANCEL ORDER
 // =========================================================
+// Customer call: creates a cancellation REQUEST only — never touches
+// status/payment/shipment. Admin call: approves — either a pending request
+// (re-checked for eligibility, since the order may have shipped since the
+// request was made) or, preserving the old behavior of this endpoint,
+// cancels directly with no pending request at all (e.g. phone support, RTO
+// handling). Both admin cases end up doing what this function used to do
+// unconditionally: courier cancel + refund + mark Cancelled.
 export const cancelOrder = async (req: Request, res: Response) => {
   try {
-    const order = await Order.findById(req.params.id);
-
-    if (!order) return res.status(404).json({ message: "Order not found" });
+    // Was Order.findById (Mongo _id) — every other order route takes the
+    // human orderId, and nothing calls this route from the frontend today,
+    // so it's safe to bring in line instead of carrying the exception.
+    const order = await Order.findOne({ orderId: req.params.id });
+    if (!order) return res.status(404).json({ success: false, message: "Order not found", code: "ORDER_NOT_FOUND" });
 
     const reqUser = (req as any).user;
-    if (reqUser?.role !== "admin" && order.userId?.toString() !== reqUser?.id) {
-      return res.status(403).json({ message: "Not authorized to cancel this order" });
+    const isAdmin = reqUser?.role === "admin";
+    if (!isAdmin && order.userId?.toString() !== reqUser?.id) {
+      return res.status(403).json({ success: false, message: "Not authorized to cancel this order", code: "UNAUTHORIZED_ORDER_ACCESS" });
     }
 
-    // Idempotent: re-cancelling an already-cancelled order (double-click,
-    // retried request) must not re-fire the courier cancel or, worse,
-    // refund the advance a second time.
-    if (order.status === "Cancelled") {
+    if (!isAdmin) {
+      const reason = req.body.reason;
+      if (!isValidCancellationReason(reason)) {
+        return res.status(400).json({
+          success: false,
+          message: reason ? "Invalid cancellation reason" : "A cancellation reason is required",
+          code: reason ? "INVALID_CANCELLATION_REASON" : "CANCELLATION_REASON_REQUIRED",
+        });
+      }
+
+      // Idempotent double-submit: a request already pending just echoes back
+      // as success rather than erroring or creating a second one.
+      if (order.cancellation?.status === "Requested") {
+        return res.json({ success: true, order });
+      }
+      if (!isCustomerCancellable(order.status, order.cancellation?.status)) {
+        return res.status(400).json({ success: false, message: "This order can no longer be cancelled", code: "ORDER_NOT_CANCELLABLE" });
+      }
+
+      order.cancellation = {
+        status: "Requested",
+        reason,
+        note: typeof req.body.note === "string" ? req.body.note.trim().slice(0, 1000) : undefined,
+        requestedAt: new Date(),
+        requestedBy: reqUser.id,
+      };
+      await order.save();
+
+      try {
+        await notifyByKey("cancellation.requested", { entityId: order.orderId, payload: { reason }, req });
+      } catch (err: any) {
+        console.error("cancellation.requested notify failed:", err.message);
+      }
+
       return res.json({ success: true, order });
     }
 
-    if (order.shipment?.awb) {
+    // ADMIN — approve. Atomic claim so two concurrent approve clicks (or an
+    // approve racing a reject) can only ever have one winner; the loser gets
+    // null back and never runs the refund below, so at most one refund is
+    // ever created. Same idiom as markOrderPaid's findOneAndUpdate guard —
+    // this codebase uses no Mongoose transactions anywhere.
+    const hasPendingRequest = order.cancellation?.status === "Requested";
+    const claimFilter = hasPendingRequest
+      ? { orderId: req.params.id, "cancellation.status": "Requested", status: { $in: CUSTOMER_CANCELLABLE_STATUSES } }
+      : { orderId: req.params.id, status: { $ne: "Cancelled" } };
+    const claimed = await Order.findOneAndUpdate(
+      claimFilter,
+      {
+        $set: {
+          status: "Cancelled",
+          "cancellation.status": "Approved",
+          "cancellation.approvedAt": new Date(),
+          "cancellation.approvedBy": reqUser.id,
+        },
+      },
+      { new: true }
+    );
+
+    if (!claimed) {
+      const current = await Order.findOne({ orderId: req.params.id });
+      if (!current) return res.status(404).json({ success: false, message: "Order not found", code: "ORDER_NOT_FOUND" });
+      if (current.status === "Cancelled") {
+        // Already cancelled by a concurrent request — idempotent no-op.
+        return res.json({ success: true, order: current });
+      }
+      if (hasPendingRequest && current.cancellation?.status !== "Requested") {
+        // A concurrent reject (or a second approve) already resolved this
+        // request before this one's claim landed.
+        return res.status(409).json({ success: false, message: "This cancellation request was already resolved", code: "CANCELLATION_NOT_PENDING" });
+      }
+      // A pending request existed but the order shipped in the meantime —
+      // the confirmed non-negotiable rule: reject the approval, no refund,
+      // no shipment/inventory side effects.
+      return res.status(409).json({
+        success: false,
+        message: "Order is no longer eligible for cancellation because it has already shipped.",
+        code: "ORDER_NO_LONGER_CANCELLABLE",
+      });
+    }
+
+    if (claimed.shipment?.awb) {
       try {
-        await ekart.cancelShipment(order.shipment.awb);
+        await ekart.cancelShipment(claimed.shipment.awb);
       } catch (err: any) {
         // Best-effort: a courier-side cancel failure (already picked up, API
         // hiccup) shouldn't block cancelling the order on our side — logged
@@ -843,38 +949,83 @@ export const cancelOrder = async (req: Request, res: Response) => {
       }
     }
 
-    // COD advance refund — the ₹500 (or less, see createOrder's small-order
-    // edge case) already charged via Razorpay to confirm the order. A fully
-    // prepaid (non-COD) order is the whole order value, not a small
-    // pre-payment, and isn't auto-refunded here — that stays a manual
-    // Razorpay-dashboard action, unchanged from before.
-    if (order.paymentMethod === "COD" && order.paymentStatus === "Paid" && order.advanceAmount > 0 && order.razorpayPaymentId) {
+    // Unified refund: covers both the old COD-advance-only case and full
+    // prepaid orders (previously a manual-dashboard-only gap) with one path.
+    // Amount omitted — Razorpay refunds whatever it still considers captured
+    // and unrefunded, which is more correct than us tracking/recomputing it.
+    if (claimed.paymentStatus === "Paid" && claimed.razorpayPaymentId) {
       try {
-        const refund = await razorpay.payments.refund(order.razorpayPaymentId, {
-          amount: order.advanceAmount * 100,
-          speed: "optimum",
-        });
-        order.refund = {
-          id: refund.id,
-          amount: order.advanceAmount,
-          status: refund.status,
-          refundedAt: new Date(),
-        };
-        order.paymentStatus = "Refunded";
+        const refund = await razorpay.payments.refund(claimed.razorpayPaymentId, { speed: "optimum" });
+        claimed.refund = { id: refund.id, amount: (refund.amount || 0) / 100, status: refund.status, refundedAt: new Date() };
+        claimed.paymentStatus = "Refunded";
       } catch (err: any) {
         // Not best-effort-and-forget like the shipment cancel above: this is
         // money that didn't come back, so it's recorded as a failed refund
         // (surfaced in the admin order view) rather than silently left as
         // "Paid", which would read as nothing being owed to the customer.
-        console.error("Razorpay advance refund failed:", err.error || err.message);
-        order.refund = { amount: order.advanceAmount, status: "failed" };
+        console.error("Razorpay refund failed:", err.error || err.message, { orderId: claimed.orderId, paymentId: claimed.razorpayPaymentId });
+        claimed.refund = { status: "failed" };
       }
     }
+    // Unpaid (Pending) orders are marked Failed on cancellation, same as
+    // before. A Paid order whose refund attempt just failed above is left
+    // as "Paid" (not silently relabeled Failed, which would misreport that
+    // the payment never went through) — refund.status="failed" is what
+    // surfaces the problem for admin follow-up/retry.
+    if (claimed.paymentStatus !== "Refunded" && claimed.paymentStatus !== "Paid") claimed.paymentStatus = "Failed";
 
-    order.status = "Cancelled";
-    if (order.paymentStatus !== "Refunded") order.paymentStatus = "Failed";
+    if (req.body.note) claimed.cancellation = { ...(claimed.cancellation as any), note: String(req.body.note).trim().slice(0, 1000) };
+    await claimed.save();
 
-    await order.save();
+    try {
+      await notifyByKey("cancellation.approved", { entityId: claimed.orderId, payload: { refundStatus: claimed.refund?.status }, req });
+    } catch (err: any) {
+      console.error("cancellation.approved notify failed:", err.message);
+    }
+
+    res.json({ success: true, order: claimed });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// Admin-only: declines a pending cancellation request. Order/payment/
+// shipment/inventory are left exactly as they were — no side effects at
+// all, only the request itself moves to Rejected. Atomic from the start
+// (new code, no legacy behavior to preserve) so a reject can't land after
+// an approve already claimed the order.
+export const rejectCancellation = async (req: Request, res: Response) => {
+  try {
+    const reqUser = (req as any).user;
+    const rejectionReason = typeof req.body.reason === "string" ? req.body.reason.trim().slice(0, 1000) : undefined;
+
+    const order = await Order.findOneAndUpdate(
+      { orderId: req.params.id, "cancellation.status": "Requested" },
+      {
+        $set: {
+          "cancellation.status": "Rejected",
+          "cancellation.rejectedAt": new Date(),
+          "cancellation.rejectedBy": reqUser.id,
+          "cancellation.rejectionReason": rejectionReason,
+        },
+      },
+      { new: true }
+    );
+
+    if (!order) {
+      const exists = await Order.exists({ orderId: req.params.id });
+      return res.status(exists ? 409 : 404).json({
+        success: false,
+        message: exists ? "No pending cancellation request to reject" : "Order not found",
+        code: exists ? "CANCELLATION_NOT_PENDING" : "ORDER_NOT_FOUND",
+      });
+    }
+
+    try {
+      await notifyByKey("cancellation.rejected", { entityId: order.orderId, payload: { reason: rejectionReason }, req });
+    } catch (err: any) {
+      console.error("cancellation.rejected notify failed:", err.message);
+    }
 
     res.json({ success: true, order });
   } catch (err: any) {

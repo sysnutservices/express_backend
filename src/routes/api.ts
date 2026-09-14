@@ -6,7 +6,7 @@ import {
     reorderProductImages, publishProduct,
     deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
-import { adminGetAllOrders, cancelOrder, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook } from '../controllers/orderController';
 import { getUsers, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig } from '../controllers/adminController';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
@@ -110,7 +110,10 @@ router.get("/orders/:id", protect, getOrderById);
 router.get("/orders/", protect, admin, adminGetAllOrders);
 router.put("/orders/:id/status", protect, admin, updateOrderStatus);
 router.put("/orders/:id/items/:itemId/serial-number", protect, admin, setItemSerialNumber);
+// protect only (not admin) — cancelOrder itself branches: customer creates
+// a cancellation request, admin approves. See cancelOrder's comment.
 router.put("/orders/:id/cancel", protect, cancelOrder);
+router.put("/orders/:id/cancel/reject", protect, admin, rejectCancellation);
 
 // Pincode check at the checkout address step — public, no order/user context needed.
 router.get("/shipping/serviceability/:pincode", checkPincodeServiceability);
