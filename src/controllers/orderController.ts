@@ -660,7 +660,7 @@ export const adminGetAllOrders = async (req: Request, res: Response) => {
 // =========================================================
 export const updateOrderStatus = async (req: Request, res: Response) => {
   try {
-    const { status } = req.body;
+    const { status, manual, courierName, trackingNumber, trackingUrl } = req.body;
     const { id } = req.params; // this is orderId, not _id
 
     const order = await Order.findOne({ orderId: id }); // ⭐ FIND USING orderId
@@ -668,10 +668,39 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    // Moving to Shipped books the actual courier shipment — gated on no AWB
-    // existing yet so re-clicking "Shipped" (or the admin re-saving) doesn't
-    // book a second one for the same order.
-    if (status === "Shipped" && !order.shipment?.awb) {
+    // Moving to Shipped either books the real Ekart shipment, or — when the
+    // admin ships it themselves (local delivery, a courier Ekart doesn't
+    // cover) — just records whatever tracking info they typed in, no
+    // courier API call. Gated on shippedAt (not awb, since a manual
+    // shipment may have none) so re-clicking Shipped doesn't redo either
+    // path for the same order.
+    if (status === "Shipped" && manual) {
+      order.shipment = {
+        ...(order.shipment || {}),
+        manual: true,
+        courierName: courierName || undefined,
+        awb: trackingNumber || undefined,
+        trackingUrl: trackingUrl || undefined,
+        shippedAt: order.shipment?.shippedAt || new Date(),
+      };
+
+      // Reuses the Ekart shipment-confirmation template, which has
+      // fixed {{awb}}/{{trackingUrl}} placeholders — only sendable when
+      // the admin actually gave both, otherwise it'd render with blanks.
+      if (trackingNumber && trackingUrl) {
+        try {
+          await sendShipmentConfirmation(
+            order.shippingAddress.phone,
+            order.customerName,
+            order.orderId,
+            trackingNumber,
+            trackingUrl
+          );
+        } catch (waErr: any) {
+          console.error("Shipment confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
+        }
+      }
+    } else if (status === "Shipped" && !order.shipment?.shippedAt) {
       const productIds = order.items.map((i: any) => i.productId);
       const products = await Product.find({ _id: { $in: productIds } });
 

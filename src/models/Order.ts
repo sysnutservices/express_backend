@@ -71,6 +71,12 @@ export interface IOrder extends Document {
     trackingUrl?: string;
     shippedAt?: Date;
     deliveredAt?: Date;
+    // Set when the admin ships an order themselves instead of booking it
+    // through Ekart (local delivery, courier Ekart doesn't cover, etc.) —
+    // courierName/awb/trackingUrl here are then whatever the admin typed
+    // in, not values Ekart's API returned.
+    manual?: boolean;
+    courierName?: string;
   };
   refund?: {
     id?: string;
@@ -141,6 +147,8 @@ const OrderSchema = new Schema(
       trackingUrl: { type: String },
       shippedAt: { type: Date },
       deliveredAt: { type: Date },
+      manual: { type: Boolean },
+      courierName: { type: String },
     },
 
     refund: {
