@@ -47,8 +47,19 @@ const TEMPLATE_IDS = {
 // person. Every sendX below funnels through here, so normalizing once at
 // this single point covers all of them instead of fixing (or missing, as
 // cartController.ts's `91${mobile}` line by itself did) each call site.
+//
+// order.shippingAddress.phone in particular is user-typed free text (the
+// address form's own placeholder is "+91 98765 43210") and never
+// server-normalized on save, so it can carry a "+", spaces, or dashes —
+// chat.lapshark.com's API rejects anything that isn't digits-only, which
+// silently dropped every shipment/delivery WhatsApp confirmation for an
+// order whose address phone had one of those. Stripping to digits first
+// (then applying the same 10-vs-12-digit logic) fixes all of those
+// formats at once instead of only the bare-10-digit case.
 function normalizeIndianMobile(to: string): string {
-    return /^\d{10}$/.test(to) ? `91${to}` : to;
+    const digits = to.replace(/\D/g, "");
+    if (digits.length === 10) return `91${digits}`;
+    return digits || to;
 }
 
 // No test runner in this project — this file's own self-check, run with
@@ -56,7 +67,8 @@ function normalizeIndianMobile(to: string): string {
 if (require.main === module) {
     console.assert(normalizeIndianMobile("7760772043") === "917760772043", "bare 10-digit should get 91 prefixed");
     console.assert(normalizeIndianMobile("917760772043") === "917760772043", "already-prefixed number should pass through unchanged");
-    console.assert(normalizeIndianMobile("+917760772043") === "+917760772043", "a non-bare-digit format is left alone, not double-prefixed");
+    console.assert(normalizeIndianMobile("+917760772043") === "917760772043", "a leading + should be stripped, not left in");
+    console.assert(normalizeIndianMobile("+91 77607 72043") === "917760772043", "spaces should be stripped too");
     console.log("normalizeIndianMobile: all checks passed");
 }
 
