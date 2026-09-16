@@ -1167,6 +1167,14 @@ export const requestReview = async (req: Request, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     console.error("Review request WhatsApp message failed:", err.response?.data || err.message);
-    res.status(502).json({ success: false, message: "Could not send review request. Try again shortly." });
+    // chat.lapshark.com returns "Template is not approved yet." while
+    // lapshark_review_request is still pending Meta's review — surfacing
+    // it directly instead of a generic message so the admin isn't left
+    // guessing why a perfectly valid click failed.
+    const reason = err.response?.data?.message;
+    res.status(502).json({
+      success: false,
+      message: typeof reason === "string" ? reason : "Could not send review request. Try again shortly.",
+    });
   }
 };
