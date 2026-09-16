@@ -37,6 +37,10 @@ const TEMPLATE_IDS = {
     cancellationRequested: process.env.WHATSAPP_SAAS_CANCELLATION_REQUESTED_TEMPLATE_ID || "933b5e2c-9a82-4236-a8b0-282c0d97ff4d",
     cancellationApproved: process.env.WHATSAPP_SAAS_CANCELLATION_APPROVED_TEMPLATE_ID || "408d64b4-03a7-4977-9a48-fb81745e1794",
     cancellationRejected: process.env.WHATSAPP_SAAS_CANCELLATION_REJECTED_TEMPLATE_ID || "9ca51b0e-bcc3-42ca-b925-1e0a4e9332d9",
+    // Created on chat.lapshark.com and submitted to Meta 2026-09-16 (status
+    // PENDING review at that time). Manually triggered from the admin order
+    // panel (see orderController.requestReview) — no automatic send yet.
+    reviewRequest: process.env.WHATSAPP_SAAS_REVIEW_REQUEST_TEMPLATE_ID || "1f429a3c-48eb-47ca-8dcf-ffae45c3bbed",
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -240,6 +244,18 @@ export async function sendCancellationRejected(to: string, customerName: string,
         return await sendTemplate(TEMPLATE_IDS.cancellationRejected, to, [customerName, orderId]);
     } catch (error: any) {
         console.error("WhatsApp Cancellation Rejected Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+// Manually triggered from the admin order panel (orderController.
+// requestReview) — not sent automatically. reviewLink is the product page
+// for the item(s) in the order.
+export async function sendReviewRequest(to: string, customerName: string, reviewLink: string) {
+    try {
+        return await sendTemplate(TEMPLATE_IDS.reviewRequest, to, [customerName, reviewLink]);
+    } catch (error: any) {
+        console.error("WhatsApp Review Request Error:", error.response?.data || error);
         throw error;
     }
 }

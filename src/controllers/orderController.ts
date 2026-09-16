@@ -5,7 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected } from "../services/wa";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected, sendReviewRequest } from "../services/wa";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import { calculateProductPrice } from "../utils/pricing";
@@ -1140,5 +1140,33 @@ export const sendLoanEnquiry = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// Manually triggered from the admin order panel (no automatic
+// post-delivery scheduling yet) — links to the product page of the first
+// item in the order, where the review form already lives. Restricted to
+// Delivered orders since asking before it's even arrived doesn't make sense.
+export const requestReview = async (req: Request, res: Response) => {
+  try {
+    const order = await Order.findOne({ orderId: req.params.id });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (order.status !== "Delivered") {
+      return res.status(400).json({ success: false, message: "Can only request a review once the order has been delivered." });
+    }
+    const firstItem = order.items[0] as any;
+    if (!firstItem?.productId) {
+      return res.status(400).json({ success: false, message: "Order has no items to review." });
+    }
+
+    const reviewLink = `https://lapshark.com/products/${firstItem.productId}`;
+    await sendReviewRequest(order.shippingAddress.phone, order.customerName, reviewLink);
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error("Review request WhatsApp message failed:", err.response?.data || err.message);
+    res.status(502).json({ success: false, message: "Could not send review request. Try again shortly." });
   }
 };
