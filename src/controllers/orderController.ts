@@ -675,30 +675,36 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     // shipment may have none) so re-clicking Shipped doesn't redo either
     // path for the same order.
     if (status === "Shipped" && manual) {
+      // Both required (not just optional extras): the shipment-confirmation
+      // WhatsApp template has fixed {{awb}}/{{trackingUrl}} placeholders, so
+      // without these the customer would silently never be told their order
+      // shipped at all.
+      if (!trackingNumber || !trackingUrl) {
+        return res.status(400).json({
+          success: false,
+          message: "Tracking number and tracking URL are required for a manual shipment.",
+        });
+      }
+
       order.shipment = {
         ...(order.shipment || {}),
         manual: true,
         courierName: courierName || undefined,
-        awb: trackingNumber || undefined,
-        trackingUrl: trackingUrl || undefined,
+        awb: trackingNumber,
+        trackingUrl,
         shippedAt: order.shipment?.shippedAt || new Date(),
       };
 
-      // Reuses the Ekart shipment-confirmation template, which has
-      // fixed {{awb}}/{{trackingUrl}} placeholders — only sendable when
-      // the admin actually gave both, otherwise it'd render with blanks.
-      if (trackingNumber && trackingUrl) {
-        try {
-          await sendShipmentConfirmation(
-            order.shippingAddress.phone,
-            order.customerName,
-            order.orderId,
-            trackingNumber,
-            trackingUrl
-          );
-        } catch (waErr: any) {
-          console.error("Shipment confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
-        }
+      try {
+        await sendShipmentConfirmation(
+          order.shippingAddress.phone,
+          order.customerName,
+          order.orderId,
+          trackingNumber,
+          trackingUrl
+        );
+      } catch (waErr: any) {
+        console.error("Shipment confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
       }
     } else if (status === "Shipped" && !order.shipment?.shippedAt) {
       const productIds = order.items.map((i: any) => i.productId);
