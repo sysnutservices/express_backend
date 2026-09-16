@@ -86,6 +86,29 @@ export async function sendOtp(to: string, otp: string) {
     }
 }
 
+// Our own signup (OTP-only) never asks for a name, so User.name would stay
+// blank forever for anyone who hasn't separately filled it in on the Account
+// page — showing as "Unknown User" in the admin Customers list. chat.lapshark.com
+// already has this: its Contacts CRM backfills a contact's `name` from the
+// WhatsApp profile name the moment that number sends the business its first
+// inbound message (see whatsapp-saas's ContactsService.upsertFromMessage).
+// Best-effort/non-throwing — most numbers won't have messaged in yet (404),
+// and this is a nice-to-have backfill, not something a login should fail on.
+export async function getContactName(mobile: string): Promise<string | null> {
+    try {
+        const response = await axios.get(
+            `${WHATSAPP_SAAS_API_URL}/crm/contacts/${normalizeIndianMobile(mobile)}`,
+            { headers: { Authorization: `Bearer ${WHATSAPP_SAAS_API_KEY}` } }
+        );
+        return response.data?.name || null;
+    } catch (error: any) {
+        if (error.response?.status !== 404) {
+            console.error("WhatsApp Get Contact Error:", error.response?.data || error);
+        }
+        return null;
+    }
+}
+
 export async function sendOrderConfirmation(to: string, customerName: string, orderId: string) {
     try {
         return await sendTemplate(TEMPLATE_IDS.orderConfirmation, to, [customerName, orderId]);

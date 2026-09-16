@@ -3,7 +3,7 @@ import User from '../models/User';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { sendOtp } from '../services/wa';
+import { sendOtp, getContactName } from '../services/wa';
 import { logAdminAction } from '../models/AuditLog';
 
 // expiresIn defaults to the customer session length so customerLogin's call
@@ -85,13 +85,24 @@ export const customerLogin = async (req: Request, res: Response) => {
   let user = await User.findOne({ mobile });
 
   if (!user) {
-    // User doesn't exist - create new account automatically
+    // User doesn't exist - create new account automatically. Try to seed
+    // the name from their WhatsApp profile (chat.lapshark.com's Contacts
+    // CRM) instead of leaving it blank forever — our own signup never asks.
     user = await User.create({
       mobile,
+      name: (await getContactName(mobile)) || undefined,
       role: 'customer',
       // Optional: set a flag to indicate profile is incomplete
       isProfileComplete: false
     });
+  } else if (!user.name) {
+    // Existing account that still has no name (e.g. signed up before they'd
+    // ever messaged the business) — retry the same backfill on login.
+    const name = await getContactName(mobile);
+    if (name) {
+      user.name = name;
+      await user.save();
+    }
   }
 
   // Return user data and token
