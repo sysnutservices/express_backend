@@ -1161,7 +1161,16 @@ export const requestReview = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Order has no items to review." });
     }
 
-    const reviewLink = `https://lapshark.com/products/${firstItem.productId}`;
+    // The product page (app/products/[id]/page.tsx) looks products up by
+    // `slug`, not by the Mongo _id stored in order.items.productId — sending
+    // the raw _id here 404'd every review link regardless of whether the
+    // product was still listed.
+    const product = await Product.findById(firstItem.productId);
+    if (!product) {
+      return res.status(400).json({ success: false, message: "This order's product no longer exists." });
+    }
+
+    const reviewLink = `https://lapshark.com/products/${product.slug}`;
     await sendReviewRequest(order.shippingAddress.phone, order.customerName, reviewLink);
 
     res.json({ success: true });
