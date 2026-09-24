@@ -525,18 +525,47 @@ export const razorpayWebhook = async (req: Request, res: Response) => {
 // this). ⚠️ Header name and payload field names (awb/status) are placeholders
 // pending Ekart's actual webhook doc — check both against it before relying
 // on this in production; see services/ekart.ts's header comment for why.
+// Keys are Ekart's swift_status values (spec.yaml: "Delivered", "Out for
+// Delivery", "RTO In Transit", ...) normalized by normalizeEkartStatus
+// below — Title Case with spaces on the wire, so matching the raw string
+// against snake_case keys silently dropped every real event.
 const EKART_STATUS_MAP: Record<string, string> = {
   picked_up: "Shipped",
   in_transit: "Shipped",
   out_for_delivery: "Out for Delivery",
   delivered: "Delivered",
   rto: "RTO",
+  rto_requested: "RTO",
+  seller_rto_requested: "RTO",
+  rto_in_transit: "RTO",
+  rto_out_for_delivery: "RTO",
   rto_delivered: "RTO",
+};
+
+const normalizeEkartStatus = (s: unknown) =>
+  typeof s === "string" ? s.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+
+// Ekart's doc says the registered secret HMACs the post body but never names
+// the header it's sent in, so rather than trust a guessed header name, accept
+// the request if any header carries the correct HMAC (hex or base64). Still
+// fail-closed: without the secret nobody can produce a matching value.
+const hasValidEkartSignature = (headers: Request["headers"], rawBody: Buffer, secret: string) => {
+  const hmac = crypto.createHmac("sha256", secret).update(rawBody);
+  const digest = hmac.digest();
+  const candidates = [digest.toString("hex"), digest.toString("base64")];
+  return Object.values(headers).some((v) =>
+    (Array.isArray(v) ? v : [v]).some((val) => {
+      if (typeof val !== "string") return false;
+      const cleaned = val.trim().replace(/^sha256=/i, "");
+      return candidates.some(
+        (c) => c.length === cleaned.length && crypto.timingSafeEqual(Buffer.from(c), Buffer.from(cleaned))
+      );
+    })
+  );
 };
 
 export const shipmentWebhook = async (req: Request, res: Response) => {
   try {
-    const signature = req.headers["x-ekart-signature"] as string | undefined;
     const secret = process.env.EKART_WEBHOOK_SECRET;
     const rawBody: Buffer | undefined = (req as any).rawBody;
 
@@ -551,12 +580,11 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
       console.error("EKART_WEBHOOK_SECRET not configured — rejecting webhook");
       return res.status(500).json({ message: "Webhook not configured" });
     }
-    if (!signature || !rawBody) {
-      return res.status(400).json({ message: "Missing signature or body" });
+    if (!rawBody) {
+      return res.status(400).json({ message: "Missing body" });
     }
-
-    const expectedSignature = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-    if (expectedSignature !== signature) {
+    if (!hasValidEkartSignature(req.headers, rawBody, secret)) {
+      console.error("Ekart webhook rejected: no header carries a valid HMAC of the body");
       return res.status(400).json({ message: "Invalid webhook signature" });
     }
 
@@ -566,7 +594,8 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
     // waybill (a different, courier-internal number, not what we key on).
     const awb = req.body.id;
     const courierStatus = req.body.status;
-    const mappedStatus = EKART_STATUS_MAP[courierStatus];
+    const mappedStatus = EKART_STATUS_MAP[normalizeEkartStatus(courierStatus)];
+    if (awb && !mappedStatus) console.log(`Ekart webhook: unmapped status "${courierStatus}" for ${awb} — ignored`);
 
     if (awb && mappedStatus) {
       const update: Record<string, unknown> = {
@@ -582,6 +611,7 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
       if (mappedStatus === "Delivered") filter.status = { $ne: "Delivered" };
 
       const order = await Order.findOneAndUpdate(filter, update, { new: true });
+      if (!order) console.warn(`Ekart webhook: no order updated for awb ${awb} (status "${courierStatus}")`);
       if (order) {
         if (mappedStatus === "Delivered") {
           try {
