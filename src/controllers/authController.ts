@@ -107,6 +107,14 @@ export const customerLogin = async (req: Request, res: Response) => {
     }
   }
 
+  // Separate update (not user.save()) so a stale/invalid field elsewhere on
+  // an old document can never make login fail over a bookkeeping write.
+  try {
+    await User.updateOne({ _id: user._id }, { $set: { lastLoginAt: new Date() } });
+  } catch (err: any) {
+    console.error('lastLoginAt update failed:', err.message);
+  }
+
   // Return user data and token
   return res.json({
     success: true,
@@ -209,6 +217,38 @@ export const getUsers = async (req: Request, res: Response) => {
         return { ...u, ordersCount: s?.ordersCount ?? 0, totalSpent: s?.totalSpent ?? 0 };
       })
     );
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// Customers who logged in after `since` (ISO string), for the admin panel's
+// login popup. `since` is clamped to the last hour so a stale or missing
+// value can't return a backlog. serverTime is returned so the client can
+// use it as the next `since` without depending on its own clock.
+const RECENT_LOGINS_MAX_WINDOW_MS = 60 * 60 * 1000;
+
+export const getRecentLogins = async (req: Request, res: Response) => {
+  try {
+    const now = new Date();
+    const floor = now.getTime() - RECENT_LOGINS_MAX_WINDOW_MS;
+    const sinceParam = typeof req.query.since === 'string' ? Date.parse(req.query.since) : NaN;
+
+    // No `since` = first poll: just hand back the server clock.
+    if (Number.isNaN(sinceParam)) {
+      return res.json({ serverTime: now.toISOString(), logins: [] });
+    }
+
+    const since = new Date(Math.max(sinceParam, floor));
+    const logins = await User.find(
+      { role: 'customer', lastLoginAt: { $gt: since, $lte: now } },
+      { name: 1, mobile: 1, email: 1, lastLoginAt: 1, createdAt: 1 }
+    )
+      .sort({ lastLoginAt: 1 })
+      .limit(20)
+      .lean();
+
+    res.json({ serverTime: now.toISOString(), logins });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
   }
