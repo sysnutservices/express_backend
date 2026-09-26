@@ -28,6 +28,9 @@ export interface IUser extends Document {
   // token's own 30-day expiry — a surgical "log out everywhere" that
   // doesn't touch `status`/block the account from logging back in.
   tokenVersion: number;
+  // Set on every successful customer OTP login — drives the admin panel's
+  // "just logged in" popup (GET /users/recent-logins).
+  lastLoginAt?: Date;
 }
 export const AddressSchema = new Schema<Address>(
   {
@@ -59,7 +62,8 @@ const UserSchema: Schema = new Schema({
   totalSpent: { type: Number, default: 0 },
   ordersCount: { type: Number, default: 0 },
   status: { type: String, enum: ['active', 'blocked'], default: 'active' },
-  tokenVersion: { type: Number, default: 0 }
+  tokenVersion: { type: Number, default: 0 },
+  lastLoginAt: { type: Date, index: true }
 }, {
   timestamps: true
 });

@@ -7,7 +7,7 @@ import {
     deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
 import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview } from '../controllers/orderController';
-import { getUsers, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
+import { getUsers, getRecentLogins, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig, getAuditLog } from '../controllers/adminController';
 import { authLimiter, otpSendLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
 import { protect, admin, internalOnly } from '../middleware/authMiddleware';
@@ -130,6 +130,7 @@ router.post('/users/login', otpVerifyLimiter, customerLogin);
 router.post('/users/otp', otpSendLimiter, sendOTP);
 router.post('/users/admin/login', authLimiter, adminLogin);
 router.get('/users', protect, admin, getUsers);
+router.get('/users/recent-logins', protect, admin, getRecentLogins);
 router.route('/users/:id/block').put(protect, admin, blockUser);
 router.post('/users/:id/force-logout', protect, admin, forceLogoutUser);
 router.put('/users/profile', protect, updateProfile);
