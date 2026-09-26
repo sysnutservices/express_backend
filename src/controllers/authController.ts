@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import User from '../models/User';
+import Order from '../models/Order';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
@@ -179,9 +181,37 @@ export const adminLogin = async (req: Request, res: Response) => {
   });
 };
 
+// Orders that count towards a customer's order count / total spent: paid,
+// and not since cancelled, returned to origin, or refunded. Unpaid orders
+// are just abandoned checkouts (createOrder saves one per Pay click).
+const COUNTED_ORDER_MATCH = {
+  paymentStatus: "Paid",
+  status: { $nin: ["Cancelled", "RTO"] },
+};
+
 export const getUsers = async (req: Request, res: Response) => {
-  const users = await User.find({});
-  res.json(users);
+  try {
+    // User.ordersCount/totalSpent are schema fields nothing ever updates,
+    // so they were always 0 — derive both from the orders themselves.
+    const [users, stats] = await Promise.all([
+      User.find({}).lean(),
+      Order.aggregate<{ _id: mongoose.Types.ObjectId; ordersCount: number; totalSpent: number }>([
+        { $match: { ...COUNTED_ORDER_MATCH, userId: { $ne: null } } },
+        { $group: { _id: "$userId", ordersCount: { $sum: 1 }, totalSpent: { $sum: "$total" } } },
+      ]),
+    ]);
+
+    const statsByUser = new Map(stats.map((s) => [s._id.toString(), s]));
+
+    res.json(
+      users.map((u) => {
+        const s = statsByUser.get(u._id.toString());
+        return { ...u, ordersCount: s?.ordersCount ?? 0, totalSpent: s?.totalSpent ?? 0 };
+      })
+    );
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
 };
 
 export const blockUser = async (req: Request, res: Response) => {
