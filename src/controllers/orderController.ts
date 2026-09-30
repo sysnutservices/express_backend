@@ -614,6 +614,14 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
       if (!order) console.warn(`Ekart webhook: no order updated for awb ${awb} (status "${courierStatus}")`);
       if (order) {
         if (mappedStatus === "Delivered") {
+          // Courier collected the COD balance on handover — record it the
+          // same way the admin "Mark as Fully Paid" button does.
+          if (order.paymentMethod === "COD" && !order.codCollected?.at) {
+            await Order.updateOne(
+              { _id: order._id, "codCollected.at": { $exists: false } },
+              { $set: { "codCollected.at": new Date() } }
+            );
+          }
           try {
             await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
           } catch (waErr: any) {
@@ -810,6 +818,11 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
 
     order.status = status;
     if (status === "Delivered" && order.shipment) order.shipment.deliveredAt = new Date();
+    // Delivered COD → courier has the cash, so the balance is received
+    // (same record setCodCollected writes; `by` left empty = automatic).
+    if (status === "Delivered" && order.paymentMethod === "COD" && !order.codCollected?.at) {
+      order.codCollected = { at: new Date() };
+    }
     await order.save();
 
     if (status === "Delivered" && !wasAlreadyDelivered) {
