@@ -16,6 +16,14 @@ export interface IOrder extends Document {
   // fake/careless COD orders) and leave (total - advanceAmount) to be
   // collected as cash by the courier. 0 for a fully-prepaid order.
   advanceAmount: number;
+  // Set by an admin once the remaining COD balance (total - advanceAmount)
+  // has actually been received — cash from the courier, or the customer
+  // paying the rest some other way. Absent until then. paymentStatus stays
+  // 'Paid' either way (it only ever tracked the Razorpay charge).
+  codCollected?: {
+    at: Date;
+    by?: mongoose.Schema.Types.ObjectId;
+  };
   // Client-generated at checkout, echoed by the browser's Meta Pixel
   // Purchase call and reused server-side for the Meta CAPI Purchase call in
   // markOrderPaid — the shared id is what lets Meta dedupe the two into one
@@ -127,6 +135,10 @@ const OrderSchema = new Schema(
     total: { type: Number, required: true },
     shippingCost: { type: Number, default: 0 },
     advanceAmount: { type: Number, default: 0 },
+    codCollected: {
+      at: { type: Date },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    },
     metaEventId: { type: String },
     mapLink: { type: String, default: "" },
     razorpayOrderId: { type: String, required: true },

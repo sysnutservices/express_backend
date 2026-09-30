@@ -766,7 +766,9 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
           shippingAddress: order.shippingAddress as any,
           total: order.total,
           paymentMethod: order.paymentMethod,
-          codAmount: order.total - (order.advanceAmount || 0),
+          // Balance already collected (see setCodCollected) → nothing left
+          // for the courier to collect; ekart then books it as Prepaid.
+          codAmount: order.codCollected?.at ? 0 : order.total - (order.advanceAmount || 0),
           items: order.items as any,
           totalWeightKg,
           dimsCm: dims,
@@ -1215,5 +1217,39 @@ export const requestReview = async (req: Request, res: Response) => {
       success: false,
       message: typeof reason === "string" ? reason : "Could not send review request. Try again shortly.",
     });
+  }
+};
+
+// Admin marks a COD order's remaining balance (total - advanceAmount) as
+// received, turning it from "Partially Paid" into "Fully Paid" on the admin
+// orders page. { collected: false } undoes a mis-click.
+export const setCodCollected = async (req: Request, res: Response) => {
+  try {
+    const collected = req.body.collected !== false;
+    const order = await Order.findOne({ orderId: req.params.id });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (order.paymentMethod !== "COD" || order.total - (order.advanceAmount || 0) <= 0) {
+      return res.status(400).json({ success: false, message: "This order has no COD balance to collect." });
+    }
+    if (order.paymentStatus !== "Paid") {
+      return res.status(400).json({ success: false, message: "The advance for this order hasn't been paid yet." });
+    }
+    if (collected && order.status === "Cancelled") {
+      return res.status(400).json({ success: false, message: "Can't mark a cancelled order as fully paid." });
+    }
+
+    if (collected) {
+      order.codCollected = { at: new Date(), by: (req as any).user?.id };
+    } else {
+      order.codCollected = undefined;
+    }
+    await order.save();
+
+    res.json({ success: true, order });
+  } catch (err: any) {
+    console.error("setCodCollected failed:", err.message);
+    res.status(500).json({ success: false, message: "Could not update payment." });
   }
 };
