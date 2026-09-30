@@ -17,8 +17,8 @@ export interface IOrder extends Document {
   // collected as cash by the courier. 0 for a fully-prepaid order.
   advanceAmount: number;
   // Set by an admin once the remaining COD balance (total - advanceAmount)
-  // has actually been received — cash from the courier, or the customer
-  // paying the rest some other way. Absent until then. paymentStatus stays
+  // has actually reached us — the courier's COD settlement (days after
+  // delivery), or the customer paying the rest some other way. Absent until then. paymentStatus stays
   // 'Paid' either way (it only ever tracked the Razorpay charge).
   codCollected?: {
     at: Date;
