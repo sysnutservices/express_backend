@@ -16,6 +16,13 @@ export interface IOrder extends Document {
   // fake/careless COD orders) and leave (total - advanceAmount) to be
   // collected as cash by the courier. 0 for a fully-prepaid order.
   advanceAmount: number;
+  // True once markOrderPaid has taken this order's quantities off product
+  // stock; cancelOrder flips it back when it restores them, so each happens
+  // at most once. Orders paid before this existed stay false (never deducted).
+  stockDeducted?: boolean;
+  // What was actually taken off per product (less than the ordered quantity
+  // when oversold), so a restore never puts back more than was removed.
+  stockDeductions?: { productId: string; quantity: number }[];
   // Set by an admin once the remaining COD balance (total - advanceAmount)
   // has actually reached us — the courier's COD settlement (days after
   // delivery), or the customer paying the rest some other way. Absent until then. paymentStatus stays
@@ -135,6 +142,8 @@ const OrderSchema = new Schema(
     total: { type: Number, required: true },
     shippingCost: { type: Number, default: 0 },
     advanceAmount: { type: Number, default: 0 },
+    stockDeducted: { type: Boolean, default: false },
+    stockDeductions: { type: [{ productId: String, quantity: Number, _id: false }], default: undefined },
     codCollected: {
       at: { type: Date },
       by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },

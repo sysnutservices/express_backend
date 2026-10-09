@@ -319,6 +319,55 @@ export const createOrder = async (req: Request, res: Response) => {
 // instead of a read-then-write race letting both send duplicate WhatsApp
 // confirmations and double-count the coupon's usedCount.
 // =========================================================
+// ---- Stock ----
+// Stock is taken off when an order is paid (COD: when its advance is paid),
+// not when it's created — unpaid/abandoned orders never hold stock. Floored
+// at 0: createOrder rejects orders that exceed stock, but two customers can
+// still pay for the last unit at the same moment, and a negative count would
+// only confuse the admin. Best-effort like the other markOrderPaid side
+// effects — the payment is already recorded and must not fail over this.
+async function deductOrderStock(order: any) {
+  try {
+    const deductions: { productId: string; quantity: number }[] = [];
+    for (const item of order.items || []) {
+      const qty = Number(item.quantity) || 0;
+      if (!item.productId || qty < 1) continue;
+      const before = await Product.findOneAndUpdate(
+        { _id: item.productId },
+        [{ $set: { stock: { $max: [0, { $subtract: [{ $ifNull: ["$stock", 0] }, qty] }] } } }],
+        { new: false, updatePipeline: true }
+      );
+      if (!before) continue;
+      const taken = Math.min(qty, Math.max(0, before.stock ?? 0));
+      if (taken > 0) deductions.push({ productId: String(item.productId), quantity: taken });
+      if (taken < qty) {
+        console.warn(`Oversold: order ${order.orderId} paid for ${qty} x ${before.title} with only ${before.stock ?? 0} in stock`);
+      }
+    }
+    await Order.updateOne({ _id: order._id }, { $set: { stockDeducted: true, stockDeductions: deductions } });
+  } catch (err: any) {
+    console.error("Stock deduction failed:", err.message, { orderId: order.orderId });
+  }
+}
+
+// Puts a cancelled order's quantities back — only if markOrderPaid actually
+// took them off, and only once (the stockDeducted claim is atomic).
+async function restoreOrderStock(orderMongoId: any) {
+  try {
+    const order = await Order.findOneAndUpdate(
+      { _id: orderMongoId, stockDeducted: true },
+      { $set: { stockDeducted: false } },
+      { new: true }
+    );
+    if (!order) return;
+    for (const d of order.stockDeductions || []) {
+      if (d.productId && d.quantity > 0) await Product.updateOne({ _id: d.productId }, { $inc: { stock: d.quantity } });
+    }
+  } catch (err: any) {
+    console.error("Stock restore failed:", err.message, { orderId: orderMongoId });
+  }
+}
+
 async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string | undefined, req: Request) {
   const update: Record<string, unknown> = {
     paymentStatus: "Paid",
@@ -348,6 +397,8 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
   if (order.coupon) {
     await markCouponUsed(order.coupon);
   }
+
+  await deductOrderStock(order);
 
   // Best-effort, like the BehaviorEvent/CAPI calls further down in this
   // function: the order is already marked Paid above, so a WhatsApp
@@ -1024,6 +1075,14 @@ export const cancelOrder = async (req: Request, res: Response) => {
         message: "Order is no longer eligible for cancellation because it has already shipped.",
         code: "ORDER_NO_LONGER_CANCELLABLE",
       });
+    }
+
+    // Cancelled before it shipped (status read before the claim above) —
+    // the laptop never left, so it goes back into stock. Shipped/RTO
+    // cancellations don't: the returned unit needs checking first, and the
+    // admin updates stock by hand once it's back.
+    if (CUSTOMER_CANCELLABLE_STATUSES.includes(order.status)) {
+      await restoreOrderStock(claimed._id);
     }
 
     if (claimed.shipment?.awb) {
