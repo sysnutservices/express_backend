@@ -33,6 +33,58 @@ export const getAllActiveCarts = async (req: Request, res: Response) => {
 };
 
 /* ======================
+   CART LINE IDENTITY + ITEM BUILDER
+====================== */
+type CartConfig = { ram?: string; storage?: string; warranty?: string };
+
+// One cart line per product+config. Keep this format in sync with
+// cartLineId in Lapshark's context/CartContext.tsx — the frontend sends it
+// back as the key for update/remove. An unconfigured item's line id is just
+// its productId, which is also what legacy rows without a lineId match on.
+export const cartLineId = (productId: string, config?: CartConfig | null) =>
+    config && (config.ram || config.storage || config.warranty)
+        ? `${productId}-${config.ram || "default"}-${config.storage || "default"}-${config.warranty || "none"}`
+        : productId;
+
+const lineKey = (item: any): string => item.lineId || item.productId;
+
+// Builds a cart row from the live product. Used to ignore the requested
+// config entirely, so a logged-in customer who picked 16GB/512GB got the
+// base 8GB/256GB in their cart and at checkout. Config values are still
+// never trusted blindly — anything the product doesn't actually offer is
+// dropped — and price/title/specs always come from the product itself.
+const buildCartItem = (product: any, rawConfig: any, quantity: number, waId: string) => {
+    const p = product.toObject();
+    const pick = (key: keyof CartConfig) => {
+        const value = rawConfig?.[key];
+        const opt = value ? (p.configOptions?.[key] || []).find((o: any) => o.value === value) : undefined;
+        return opt ? { label: opt.label, value: opt.value, price: opt.price || 0 } : undefined;
+    };
+    const ram = pick("ram");
+    const storage = pick("storage");
+    const warranty = pick("warranty");
+    const config = { ram: ram?.value, storage: storage?.value, warranty: warranty?.value };
+    const productId = p._id.toString();
+    const lineId = cartLineId(productId, config);
+    const configured = lineId !== productId;
+    const specs = p.specs || {};
+
+    return {
+        productId,
+        lineId,
+        title: ram && storage ? `${p.title} (${ram.value} / ${storage.value})` : p.title,
+        image: p.image,
+        finalPrice: p.finalPrice + (ram?.price || 0) + (storage?.price || 0) + (warranty?.price || 0),
+        slug: p.slug,
+        specs: { ...specs, ram: ram?.value || specs.ram, storage: storage?.value || specs.storage },
+        config: configured ? config : undefined,
+        configOptions: configured ? { ram, storage, warranty } : undefined,
+        quantity,
+        waId,
+    };
+};
+
+/* ======================
    GET CART
 ====================== */
 export const getCart = async (req: Request, res: Response) => {
@@ -47,23 +99,14 @@ export const getCart = async (req: Request, res: Response) => {
 ====================== */
 export const addToCart = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
-    const { productId } = req.body;
+    const { productId, config } = req.body;
     const mobile = await User.findById(userId)
     const product = await Product.findById(productId);
     if (!product) {
         return res.status(404).json({ message: "Product not found" });
     }
 
-    const item = {
-        productId: product._id.toString(),
-        title: product.title,
-        image: product.image,
-        finalPrice: product.finalPrice,
-        slug: product.slug,
-        specs: product.specs || {},
-        quantity: 1,
-        waId: `91${mobile?.mobile}`
-    };
+    const item = buildCartItem(product, config, 1, `91${mobile?.mobile}`);
 
     let cart = await Cart.findOne({ userId });
 
@@ -76,13 +119,13 @@ export const addToCart = async (req: Request, res: Response) => {
     }
 
     const existing = cart.items.find(
-        (i: any) => i.productId === productId
+        (i: any) => lineKey(i) === item.lineId
     );
 
     if (existing) {
-        existing.quantity += 1;
+        existing.quantity = Math.min(5, existing.quantity + 1);
     } else {
-        cart.items.push(item); // ✅ push new object
+        cart.items.push(item as any); // ✅ push new object
     }
     cart.notified = false;
     await cart.save();
@@ -98,7 +141,7 @@ export const addToCart = async (req: Request, res: Response) => {
 // Called once, right after login, with whatever a guest had sitting in
 // localStorage. Never trusts the guest's client-side snapshot for price/
 // title/specs — same principle as addToCart above — it only reads
-// productId+quantity out of each guest item and re-fetches the real
+// productId+quantity+config out of each guest item and re-fetches the real
 // product server-side. Quantities from a matching existing item add
 // together (typical cart-merge behavior), everything is clamped to the
 // same 1-5 range updateCartItem enforces, and a guest item pointing at a
@@ -120,21 +163,13 @@ export const mergeGuestCart = async (req: Request, res: Response) => {
             if (!product) continue; // deleted/invalid product — drop it rather than fail the merge
 
             const requestedQty = Math.max(1, Math.min(5, Number(guestItem.quantity) || 1));
-            const existing = cart.items.find((i: any) => i.productId === guestItem.productId);
+            const item = buildCartItem(product, guestItem.config, requestedQty, `91${mobile?.mobile}`);
+            const existing = cart.items.find((i: any) => lineKey(i) === item.lineId);
 
             if (existing) {
                 existing.quantity = Math.max(1, Math.min(5, existing.quantity + requestedQty));
             } else {
-                cart.items.push({
-                    productId: product._id.toString(),
-                    title: product.title,
-                    image: product.image,
-                    finalPrice: product.finalPrice,
-                    slug: product.slug,
-                    specs: product.specs || {},
-                    quantity: requestedQty,
-                    waId: `91${mobile?.mobile}`,
-                } as any);
+                cart.items.push(item as any);
             }
         }
         cart.notified = false;
@@ -144,6 +179,8 @@ export const mergeGuestCart = async (req: Request, res: Response) => {
     res.json(cart);
 };
 
+// `productId` in the body/URL of update/remove is the cart line id (see
+// cartLineId) — it's still the bare productId for unconfigured/legacy rows.
 export const updateCartItem = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
     const { productId, quantity } = req.body;
@@ -151,7 +188,7 @@ export const updateCartItem = async (req: Request, res: Response) => {
     const cart = await Cart.findOne({ userId });
     if (!cart) return res.json({ items: [] });
 
-    const item = cart.items.find((i: any) => i.productId === productId);
+    const item = cart.items.find((i: any) => lineKey(i) === productId);
     if (item) item.quantity = Math.max(1, Math.min(5, quantity));
 
     await cart.save();
@@ -162,11 +199,11 @@ export const removeCartItem = async (req: Request, res: Response) => {
     const userId = (req as any).user.id;
     const { productId } = req.params;
 
-    await Cart.findOneAndUpdate(
-        { userId },
-        { $pull: { items: { productId } } },
-        { new: true }
-    );
+    const cart = await Cart.findOne({ userId });
+    if (cart) {
+        cart.set("items", cart.items.filter((i: any) => lineKey(i) !== productId));
+        await cart.save();
+    }
 
     res.json({ message: "Item removed" });
 };

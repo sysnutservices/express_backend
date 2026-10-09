@@ -153,7 +153,13 @@ export const createOrder = async (req: Request, res: Response) => {
         storage: storageOption,
         warranty: warrantyOption,
         selectedConfig: item.config,
-        specs: product.specs,
+        // Base specs are the default config (e.g. 8GB/256GB) — reflect what
+        // was actually chosen so the order record matches selectedConfig.
+        specs: {
+          ...((product as any).toObject?.().specs ?? product.specs),
+          ...(ramOption ? { ram: ramOption.value } : {}),
+          ...(storageOption ? { storage: storageOption.value } : {}),
+        },
         originalPrice: priced.offer ? priced.sellingPrice + configCost : undefined,
         extraOfferDiscount: priced.offer?.discountAmount,
         extraOfferLabel: priced.offer?.offerLabel,
