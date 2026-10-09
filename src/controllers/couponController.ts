@@ -104,7 +104,10 @@ export async function validateAndComputeCoupon(code: string, cartTotal: number):
         return { valid: false, message: `Minimum order value is ₹${coupon.minOrderValue}`, discountAmount: 0, finalAmount: cartTotal };
     }
 
-    let discountAmount = coupon.type === "percentage" ? (cartTotal * coupon.value) / 100 : coupon.value;
+    // Whole rupees: a percentage coupon produced fractional amounts (7% of
+    // ₹28,999 = ₹2,029.93), which made the Razorpay order amount fractional
+    // paise and failed order creation.
+    let discountAmount = Math.round(coupon.type === "percentage" ? (cartTotal * coupon.value) / 100 : coupon.value);
     if (discountAmount > cartTotal) discountAmount = cartTotal;
 
     return { valid: true, coupon, discountAmount, finalAmount: cartTotal - discountAmount };

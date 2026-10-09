@@ -84,6 +84,16 @@ export const createOrder = async (req: Request, res: Response) => {
 
     const userId = (req as any).user?.id || null;
 
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, message: "Your cart is empty." });
+    }
+    // Quantity was taken from the request as-is, so a crafted request with a
+    // negative quantity on one line could subtract from the others and get a
+    // laptop for a few hundred rupees. Same 1-5 range the cart enforces.
+    if (items.some((i: any) => !Number.isInteger(i?.quantity) || i.quantity < 1 || i.quantity > 5)) {
+      return res.status(400).json({ success: false, message: "Invalid item quantity. Please update your cart and try again." });
+    }
+
     // ---- Fetch Products ----
     const productIds = items.map((i: any) => i.productId);
     const products = await Product.find({ _id: { $in: productIds } });
@@ -114,16 +124,16 @@ export const createOrder = async (req: Request, res: Response) => {
       if (!product) throw new Error("Product not found");
 
       // Config pricing
-      const ramOption = product.configOptions.ram.find(
-        (r: any) => r.value === item.config.ram
+      const ramOption = product.configOptions?.ram?.find(
+        (r: any) => r.value === item.config?.ram
       );
 
-      const storageOption = product.configOptions.storage.find(
-        (s: any) => s.value === item.config.storage
+      const storageOption = product.configOptions?.storage?.find(
+        (s: any) => s.value === item.config?.storage
       );
 
-      const warrantyOption = product.configOptions.warranty.find(
-        (w: any) => w.value === item.config.warranty
+      const warrantyOption = product.configOptions?.warranty?.find(
+        (w: any) => w.value === item.config?.warranty
       );
 
       const configCost =
@@ -165,6 +175,21 @@ export const createOrder = async (req: Request, res: Response) => {
         extraOfferLabel: priced.offer?.offerLabel,
       };
     });
+
+    // Nothing checked stock at order time, so an item that sold out while
+    // sitting in someone's cart could still be paid for.
+    // Summed per product: two configs of one laptop draw on the same stock.
+    const qtyByProduct = new Map<string, number>();
+    for (const item of items) qtyByProduct.set(item.productId, (qtyByProduct.get(item.productId) || 0) + item.quantity);
+    const unavailable = products
+      .filter((p) => qtyByProduct.has(p._id.toString()) && (p.stock ?? 0) < qtyByProduct.get(p._id.toString())!)
+      .map((p) => p.title);
+    if (unavailable.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Sorry, not enough stock for: ${unavailable.join(", ")}. Please remove it from your cart to continue.`,
+      });
+    }
 
     if (priceChanged) {
       return res.status(409).json({
@@ -232,7 +257,7 @@ export const createOrder = async (req: Request, res: Response) => {
 
     // ---- Create Razorpay Order ----
     const razorpayOrder = await razorpay.orders.create({
-      amount: amountToCharge * 100, // convert to paisa
+      amount: Math.round(amountToCharge * 100), // convert to paisa (must be an integer)
       currency: "INR",
       receipt: "order_" + Date.now()
     });
@@ -270,14 +295,15 @@ export const createOrder = async (req: Request, res: Response) => {
       success: true,
       order: newOrder,
       razorpayOrderId: razorpayOrder.id,
-      amount: amountToCharge * 100,
+      amount: Math.round(amountToCharge * 100),
       key: process.env.RAZORPAY_KEY
     });
   } catch (err: any) {
     console.error("ORDER ERROR:", err);
+    // `message` is what the checkout page shows the customer.
     return res
       .status(500)
-      .json({ success: false, error: err.message || "Server Error" });
+      .json({ success: false, message: "We couldn't place your order. Please try again.", error: err.message || "Server Error" });
   }
 };
 
