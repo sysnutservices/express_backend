@@ -368,7 +368,7 @@ async function restoreOrderStock(orderMongoId: any) {
   }
 }
 
-async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string | undefined, req: Request) {
+async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string, razorpaySignature: string | undefined, req?: Request) {
   const update: Record<string, unknown> = {
     paymentStatus: "Paid",
     status: "Processing",
@@ -467,14 +467,14 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
       userData: {
         email: order.customerEmail || undefined,
         phone: order.shippingAddress?.phone,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"] as string | undefined,
+        ip: req?.ip,
+        userAgent: req?.headers["user-agent"] as string | undefined,
         // Only present when markOrderPaid runs off verifyPayment (a real
         // browser request) — absent on the webhook path, which is
         // Razorpay's server calling us with no cookie jar of its own.
         // parseFbCookies(undefined) just returns {}, so this degrades
         // gracefully either way.
-        ...parseFbCookies(req.headers.cookie),
+        ...parseFbCookies(req?.headers.cookie),
       },
       customData: {
         value: order.total,
@@ -1396,5 +1396,90 @@ export const syncRazorpayPayment = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("syncRazorpayPayment failed:", err.error || err.message);
     res.status(502).json({ success: false, message: "Couldn't reach Razorpay. Try again shortly." });
+  }
+};
+
+// =========================================================
+// AUTOMATIC PAYMENT RECONCILIATION
+// =========================================================
+// verifyPayment needs the customer's browser to survive the payment (on
+// mobile UPI it often doesn't: the tab is killed while they're in the UPI
+// app), and the webhook needs the Razorpay dashboard set up right. This
+// depends on neither: every few minutes it asks Razorpay about recent
+// orders still unpaid here and records any captured payment through
+// markOrderPaid. Only untouched Pending orders, so an order an admin has
+// cancelled or moved on is never changed behind their back.
+const RECONCILE_EVERY_MS = 5 * 60 * 1000;
+const RECONCILE_LOOKBACK_MS = 3 * 24 * 60 * 60 * 1000;
+// Give verifyPayment/the webhook the first couple of minutes.
+const RECONCILE_MIN_AGE_MS = 2 * 60 * 1000;
+
+async function reconcileRazorpayPayments(since: Date, apply: boolean) {
+  const orders = await Order.find({
+    paymentStatus: "Pending",
+    status: "Pending",
+    razorpayOrderId: /^order_/,
+    createdAt: { $gte: since, $lte: new Date(Date.now() - RECONCILE_MIN_AGE_MS) },
+  }).select("orderId razorpayOrderId");
+
+  const found: { orderId: string; razorpayPaymentId: string; amount: number; applied: boolean }[] = [];
+  let errors = 0;
+  for (const order of orders) {
+    try {
+      const { items } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+      const captured = items.find((p) => p.status === "captured");
+      if (!captured) continue;
+      const amount = Number(captured.amount) / 100;
+      if (apply) {
+        await markOrderPaid(order.razorpayOrderId, captured.id, undefined);
+        logAdminAction({
+          actorId: null,
+          actor: "payment-reconciler",
+          action: "order.payment.sync",
+          targetType: "Order",
+          targetId: order.orderId,
+          meta: { razorpayPaymentId: captured.id, amount, automatic: true },
+        });
+        console.warn(`Payment reconciler: ${order.orderId} was paid on Razorpay (${captured.id}, ₹${amount}) but still Pending here — marked paid`);
+      }
+      found.push({ orderId: order.orderId, razorpayPaymentId: captured.id, amount, applied: apply });
+    } catch (err: any) {
+      errors++;
+      console.error(`Payment reconciler: couldn't check ${order.orderId}:`, err.error || err.message);
+    }
+  }
+  return { checked: orders.length, errors, found };
+}
+
+let reconcileRunning = false;
+export function startPaymentReconciler() {
+  if (!process.env.RAZORPAY_KEY || !process.env.RAZORPAY_SECRET) return;
+  const run = async () => {
+    if (reconcileRunning) return;
+    reconcileRunning = true;
+    try {
+      await reconcileRazorpayPayments(new Date(Date.now() - RECONCILE_LOOKBACK_MS), true);
+    } catch (err: any) {
+      console.error("Payment reconciler run failed:", err.message);
+    } finally {
+      reconcileRunning = false;
+    }
+  };
+  setTimeout(run, 60 * 1000);
+  setInterval(run, RECONCILE_EVERY_MS);
+}
+
+// Admin, read-only: unpaid orders from the last ?days= (default 30, max 365)
+// that Razorpay says were actually paid. Changes nothing; for checking the
+// backlog older than the reconciler's 3-day window. Fix each one with
+// Check with Razorpay (syncRazorpayPayment).
+export const reportUnrecordedPayments = async (req: Request, res: Response) => {
+  try {
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+    const result = await reconcileRazorpayPayments(new Date(Date.now() - days * 24 * 60 * 60 * 1000), false);
+    res.json({ success: true, days, ...result });
+  } catch (err: any) {
+    console.error("reportUnrecordedPayments failed:", err.message);
+    res.status(500).json({ success: false, message: "Could not check payments." });
   }
 };

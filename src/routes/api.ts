@@ -6,7 +6,7 @@ import {
     reorderProductImages, publishProduct,
     deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
-import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected, syncRazorpayPayment } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected, syncRazorpayPayment, reportUnrecordedPayments } from '../controllers/orderController';
 import { getUsers, getRecentLogins, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig, getAuditLog } from '../controllers/adminController';
 import { authLimiter, otpSendLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
@@ -103,6 +103,8 @@ router.post("/orders/verify", protect, verifyPayment);
 // inside the handler (see razorpayWebhook's comment).
 router.post("/orders/webhook", razorpayWebhook);
 router.get("/orders/mine", protect, getUserOrders);
+// Before /orders/:id, which would otherwise swallow it.
+router.get("/orders/unrecorded-payments", protect, admin, reportUnrecordedPayments);
 // getOrderById/cancelOrder check ownership (or admin) inside the controller
 // — protect alone would still let any logged-in customer view/cancel any
 // other customer's order by id.
