@@ -6,7 +6,7 @@ import {
     reorderProductImages, publishProduct,
     deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
-import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected, syncRazorpayPayment } from '../controllers/orderController';
 import { getUsers, getRecentLogins, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig, getAuditLog } from '../controllers/adminController';
 import { authLimiter, otpSendLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
@@ -117,6 +117,7 @@ router.put("/orders/:id/cancel", protect, cancelOrder);
 router.put("/orders/:id/cancel/reject", protect, admin, rejectCancellation);
 router.post("/orders/:id/request-review", protect, admin, requestReview);
 router.put("/orders/:id/cod-collected", protect, admin, setCodCollected);
+router.post("/orders/:id/sync-payment", protect, admin, syncRazorpayPayment);
 
 // Pincode check at the checkout address step — public, no order/user context needed.
 router.get("/shipping/serviceability/:pincode", checkPincodeServiceability);

@@ -1346,3 +1346,55 @@ export const setCodCollected = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Could not update payment." });
   }
 };
+
+// Admin "Check with Razorpay": asks Razorpay directly whether an order we
+// still have as unpaid was actually paid. Covers the case neither
+// verifyPayment nor the webhook caught (customer's browser died right after
+// paying and the webhook never arrived) — a captured payment goes through
+// markOrderPaid exactly as if verifyPayment had run, side effects and all.
+export const syncRazorpayPayment = async (req: Request, res: Response) => {
+  try {
+    const reqUser = (req as any).user;
+    const order = await Order.findOne({ orderId: req.params.id });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (order.paymentStatus === "Paid") {
+      return res.json({ success: true, order, message: "Already marked paid." });
+    }
+    if (!order.razorpayOrderId?.startsWith("order_")) {
+      return res.status(400).json({ success: false, message: "This order has no Razorpay checkout to check." });
+    }
+
+    const { items } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+    const captured = items.find((p) => p.status === "captured");
+    if (!captured) {
+      const authorized = items.find((p) => p.status === "authorized");
+      const message = authorized
+        ? `Payment ${authorized.id} is authorized but not captured — capture it in the Razorpay dashboard, then check again.`
+        : items.length
+          ? `No successful payment on Razorpay (${items.map((p) => p.status).join(", ")}).`
+          : "Razorpay has no payment attempt for this order — the customer never paid.";
+      return res.json({ success: true, order, paid: false, message });
+    }
+
+    const updated = await markOrderPaid(order.razorpayOrderId, captured.id, undefined, req);
+    logAdminAction({
+      actorId: reqUser?.id,
+      actor: reqUser?.name || "admin",
+      action: "order.payment.sync",
+      targetType: "Order",
+      targetId: order.orderId,
+      meta: { razorpayPaymentId: captured.id, amount: Number(captured.amount) / 100 },
+    });
+    res.json({
+      success: true,
+      order: updated,
+      paid: true,
+      message: `Found payment ${captured.id} of ₹${(Number(captured.amount) / 100).toLocaleString("en-IN")} — order marked paid.`,
+    });
+  } catch (err: any) {
+    console.error("syncRazorpayPayment failed:", err.error || err.message);
+    res.status(502).json({ success: false, message: "Couldn't reach Razorpay. Try again shortly." });
+  }
+};
