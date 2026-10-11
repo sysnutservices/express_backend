@@ -15,10 +15,16 @@
 // Refuses orders that are shipped, cancelled, or already have a shipment
 // booked: the courier would already hold the old COD amount.
 //
+// A pending cancellation request blocks it too, unless --close-cancellation
+// is passed: that marks the request Rejected ("Quantity corrected to N")
+// without the WhatsApp message the admin Reject button sends, for when the
+// customer only asked to cancel because of the wrong quantity.
+//
 // Dry run (prints changes, writes nothing):
 //   node dist/scripts/setOrderItemQuantity.js LS-20261010-03 1
 // Apply:
 //   node dist/scripts/setOrderItemQuantity.js LS-20261010-03 1 --apply
+// (LS-20261010-03 itself also needed --close-cancellation.)
 // An order with more than one line item also needs --item <n> (1-based).
 import mongoose from "mongoose";
 import connectDB from "../config/db";
@@ -28,6 +34,7 @@ import Coupon from "../models/Coupon";
 import AuditLog from "../models/AuditLog";
 
 const APPLY = process.argv.includes("--apply");
+const CLOSE_CANCELLATION = process.argv.includes("--close-cancellation");
 const itemFlag = process.argv.indexOf("--item");
 const [orderId, qtyArg] = process.argv
     .slice(2)
@@ -44,7 +51,7 @@ const fail = (msg: string) => {
 
 const run = async () => {
     if (!orderId || !Number.isInteger(newQty) || newQty < 1) {
-        fail("Usage: node dist/scripts/setOrderItemQuantity.js <orderId> <newQuantity> [--item <n>] [--apply]");
+        fail("Usage: node dist/scripts/setOrderItemQuantity.js <orderId> <newQuantity> [--item <n>] [--close-cancellation] [--apply]");
     }
     await connectDB();
 
@@ -54,7 +61,10 @@ const run = async () => {
     if (["Shipped", "Out for Delivery", "Delivered", "Cancelled", "RTO"].includes(order.status) || order.shipment?.awb) {
         fail(`${orderId} is ${order.status}${order.shipment?.awb ? ` with shipment ${order.shipment.awb}` : ""} — not safe to change here.`);
     }
-    if (order.cancellation?.status === "Requested") fail(`${orderId} has a pending cancellation request — resolve that first.`);
+    const closeCancellation = order.cancellation?.status === "Requested";
+    if (closeCancellation && !CLOSE_CANCELLATION) {
+        fail(`${orderId} has a pending cancellation request — resolve that first, or pass --close-cancellation.`);
+    }
 
     let index = 0;
     if (order.items.length > 1) {
@@ -111,6 +121,12 @@ const run = async () => {
     const deduction = order.stockDeducted ? deductions.find((d) => d.productId === productId) : undefined;
     const restock = deduction ? Math.min(removed, deduction.quantity) : 0;
     console.log(`  stock:     ${restock ? `+${restock} back to the product` : "no change (not deducted for this order)"}`);
+    const rejectionReason = `Quantity corrected to ${newQty}`;
+    if (closeCancellation) {
+        const c = order.cancellation;
+        console.log(`  cancellation request (${c.reason || "no reason"}${c.note ? `: "${c.note}"` : ""})`);
+        console.log(`             -> Rejected, "${rejectionReason}", no WhatsApp sent`);
+    }
 
     if (!APPLY) {
         console.log("\nDry run — nothing written. Rerun with --apply.");
@@ -119,7 +135,12 @@ const run = async () => {
 
     if (deduction) deduction.quantity -= restock;
     const res = await Order.updateOne(
-        { _id: order._id, [`items.${index}.quantity`]: oldQty, total: order.total },
+        {
+            _id: order._id,
+            [`items.${index}.quantity`]: oldQty,
+            total: order.total,
+            ...(closeCancellation ? { "cancellation.status": "Requested" } : {}),
+        },
         {
             $set: {
                 [`items.${index}.quantity`]: newQty,
@@ -127,6 +148,13 @@ const run = async () => {
                 shippingCost,
                 total,
                 ...(deduction ? { stockDeductions: deductions.filter((d) => d.quantity > 0) } : {}),
+                ...(closeCancellation
+                    ? {
+                          "cancellation.status": "Rejected",
+                          "cancellation.rejectedAt": new Date(),
+                          "cancellation.rejectionReason": rejectionReason,
+                      }
+                    : {}),
             },
         }
     );
@@ -140,6 +168,15 @@ const run = async () => {
         targetId: orderId,
         meta: { item: item.title, oldQty, newQty, oldTotal: order.total, newTotal: total, restock },
     });
+    if (closeCancellation) {
+        await AuditLog.create({
+            actor: "script:setOrderItemQuantity",
+            action: "order.cancel.reject",
+            targetType: "Order",
+            targetId: orderId,
+            meta: { reason: rejectionReason, whatsapp: false },
+        });
+    }
     console.log(`\n✅ ${orderId} updated.`);
 };
 
