@@ -116,6 +116,14 @@ export interface IOrder extends Document {
     rejectedBy?: mongoose.Schema.Types.ObjectId;
     rejectionReason?: string;
   };
+  // Set when a "complete your payment" WhatsApp went out for this order
+  // while it was unpaid (automatic sweep or admin button). Kept after the
+  // order is paid: a paid order with this set is a recovered sale.
+  paymentReminder?: {
+    sentAt: Date;
+    count: number;
+    lastBy?: string; // admin user id, or "payment-reminder" for the sweep
+  };
 }
 
 const AddressSubSchema = new Schema(
@@ -190,6 +198,12 @@ const OrderSchema = new Schema(
       rejectedAt: { type: Date },
       rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       rejectionReason: { type: String },
+    },
+
+    paymentReminder: {
+      sentAt: { type: Date },
+      count: { type: Number },
+      lastBy: { type: String },
     },
 
     paymentStatus: {

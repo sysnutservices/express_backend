@@ -7,7 +7,7 @@ import apiRoutes from './routes/api';
 import path from 'path';
 import connectDB from './config/db';
 import { globalApiLimiter } from './middleware/rateLimiters';
-import { startPaymentReconciler } from './controllers/orderController';
+import { startPaymentReconciler, startPaymentReminders } from './controllers/orderController';
 
 dotenv.config();
 
@@ -62,4 +62,5 @@ app.get('/', (req, res) => {
 app.listen(5000, "0.0.0.0", () => {
   console.log("Server running on http://0.0.0.0:5000");
   startPaymentReconciler();
+  startPaymentReminders();
 });

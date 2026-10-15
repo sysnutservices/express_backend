@@ -41,6 +41,12 @@ const TEMPLATE_IDS = {
     // PENDING review at that time). Manually triggered from the admin order
     // panel (see orderController.requestReview) — no automatic send yet.
     reviewRequest: process.env.WHATSAPP_SAAS_REVIEW_REQUEST_TEMPLATE_ID || "1f429a3c-48eb-47ca-8dcf-ffae45c3bbed",
+    // No template yet, same as shipmentCreated above. Create one on
+    // chat.lapshark.com (e.g. "Hi {{1}}, your Lapshark order {{2}} for
+    // ₹{{3}} hasn't been paid yet. You can complete payment here: {{4}}"),
+    // get it Meta-approved, then set WHATSAPP_SAAS_PAYMENT_REMINDER_TEMPLATE_ID.
+    // Until then both the admin button and the automatic sweep send nothing.
+    paymentReminder: process.env.WHATSAPP_SAAS_PAYMENT_REMINDER_TEMPLATE_ID,
 };
 
 // WhatsApp's Cloud API always reports an inbound sender with the country
@@ -256,6 +262,26 @@ export async function sendReviewRequest(to: string, customerName: string, review
         return await sendTemplate(TEMPLATE_IDS.reviewRequest, to, [customerName, reviewLink]);
     } catch (error: any) {
         console.error("WhatsApp Review Request Error:", error.response?.data || error);
+        throw error;
+    }
+}
+
+export function paymentReminderConfigured(): boolean {
+    return !!TEMPLATE_IDS.paymentReminder;
+}
+
+// Sent for an abandoned (created but never paid) order — by the automatic
+// sweep in orderController.startPaymentReminders, or by an admin from the
+// order panel. payLink is the customer's order page, which has the
+// "Complete payment" button. amountDue is a string: the API 400s on numbers.
+export async function sendPaymentReminder(to: string, customerName: string, orderId: string, amountDue: string, payLink: string) {
+    if (!TEMPLATE_IDS.paymentReminder) {
+        throw new Error("Payment reminder template not set up (WHATSAPP_SAAS_PAYMENT_REMINDER_TEMPLATE_ID).");
+    }
+    try {
+        return await sendTemplate(TEMPLATE_IDS.paymentReminder, to, [customerName, orderId, amountDue, payLink], ["payment-reminder"]);
+    } catch (error: any) {
+        console.error("WhatsApp Payment Reminder Error:", error.response?.data || error);
         throw error;
     }
 }

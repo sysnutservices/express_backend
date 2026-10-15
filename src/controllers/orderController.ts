@@ -5,7 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
-import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected, sendReviewRequest } from "../services/wa";
+import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected, sendReviewRequest, sendPaymentReminder, paymentReminderConfigured } from "../services/wa";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import { calculateProductPrice } from "../utils/pricing";
@@ -16,6 +16,8 @@ import { nextSeq } from "../models/Counter";
 import { normalizeSerialNumber, findSerialConflict } from "../utils/serialNumber";
 import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_STATUSES } from "../utils/cancellation";
 import { logAdminAction } from "../models/AuditLog";
+import Cart from "../models/Cart";
+import { pickOrdersToRemind, customerKeyOf, amountDue, REMIND_WITHIN_MS } from "../utils/paymentReminder";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -65,6 +67,20 @@ export const checkPincodeServiceability = async (req: Request, res: Response) =>
     res.status(500).json({ success: false, error: err.message });
   }
 };
+
+// Titles of the products that don't have enough stock for these items.
+// Summed per product: two configs of one laptop draw on the same stock.
+// Used by createOrder and resumePayment.
+function outOfStockTitles(items: { productId: any; quantity: number }[], products: any[]): string[] {
+  const qtyByProduct = new Map<string, number>();
+  for (const item of items) {
+    const id = String(item.productId);
+    qtyByProduct.set(id, (qtyByProduct.get(id) || 0) + item.quantity);
+  }
+  return products
+    .filter((p) => qtyByProduct.has(p._id.toString()) && (p.stock ?? 0) < qtyByProduct.get(p._id.toString())!)
+    .map((p) => p.title);
+}
 
 // =========================================================
 // 1️⃣ CREATE ORDER (Internal + Razorpay Order)
@@ -178,12 +194,7 @@ export const createOrder = async (req: Request, res: Response) => {
 
     // Nothing checked stock at order time, so an item that sold out while
     // sitting in someone's cart could still be paid for.
-    // Summed per product: two configs of one laptop draw on the same stock.
-    const qtyByProduct = new Map<string, number>();
-    for (const item of items) qtyByProduct.set(item.productId, (qtyByProduct.get(item.productId) || 0) + item.quantity);
-    const unavailable = products
-      .filter((p) => qtyByProduct.has(p._id.toString()) && (p.stock ?? 0) < qtyByProduct.get(p._id.toString())!)
-      .map((p) => p.title);
+    const unavailable = outOfStockTitles(items, products);
     if (unavailable.length) {
       return res.status(400).json({
         success: false,
@@ -1483,3 +1494,221 @@ export const reportUnrecordedPayments = async (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: "Could not check payments." });
   }
 };
+
+// =========================================================
+// ABANDONED ORDER RECOVERY
+// =========================================================
+// Every checkout creates its order before the customer pays, so a closed
+// Razorpay window leaves it Pending/Pending. These let the customer pay that
+// same order later (the "Complete payment" button on their order page) and
+// remind them on WhatsApp, automatically or from the admin order panel.
+
+// Customer: reopen Razorpay for their own unpaid order. Reuses the order's
+// Razorpay order (it accepts new attempts until paid), so the amount is
+// exactly what they saw at checkout, and /orders/verify, the webhook and the
+// reconciler all record the payment as they would have the first time.
+export const resumePayment = async (req: Request, res: Response) => {
+  try {
+    const reqUser = (req as any).user;
+    const order = await Order.findOne({ orderId: req.params.id });
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (order.userId?.toString() !== reqUser?.id) {
+      return res.status(403).json({ success: false, message: "Not authorized to pay for this order" });
+    }
+    if (order.paymentStatus === "Paid") {
+      return res.json({ success: true, alreadyPaid: true, order });
+    }
+    if (order.paymentStatus !== "Pending" || order.status !== "Pending" || order.cancellation?.status) {
+      return res.status(400).json({ success: false, message: "This order can no longer be paid. Please place a new order." });
+    }
+    if (!order.razorpayOrderId?.startsWith("order_")) {
+      return res.status(400).json({ success: false, message: "This order can't be paid online. Please contact support." });
+    }
+
+    // Never charge twice: an earlier attempt may have gone through without
+    // our hearing about it (browser closed during UPI, webhook not set up).
+    const { items: payments } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+    const captured = payments.find((p) => p.status === "captured");
+    if (captured) {
+      const updated = await markOrderPaid(order.razorpayOrderId, captured.id, undefined, req);
+      return res.json({ success: true, alreadyPaid: true, order: updated });
+    }
+    if (payments.some((p) => p.status === "authorized")) {
+      return res.status(409).json({ success: false, message: "Your earlier payment is still being processed. Please check this order again in a few minutes." });
+    }
+
+    // Stock is only taken off once an order is paid, so an item can have
+    // sold out since this order was created.
+    const products = await Product.find({ _id: { $in: order.items.map((i: any) => i.productId) } });
+    const missing = order.items
+      .filter((i: any) => !products.some((p) => p._id.toString() === String(i.productId)))
+      .map((i: any) => i.title);
+    const unavailable = [...missing, ...outOfStockTitles(order.items as any, products)];
+    if (unavailable.length) {
+      return res.status(400).json({
+        success: false,
+        message: `Sorry, not enough stock for: ${unavailable.join(", ")}. This order can't be paid now. Please contact us or choose another laptop.`,
+      });
+    }
+
+    const rzOrder = await razorpay.orders.fetch(order.razorpayOrderId);
+    res.json({
+      success: true,
+      order,
+      razorpayOrderId: order.razorpayOrderId,
+      amount: Number(rzOrder.amount),
+      key: process.env.RAZORPAY_KEY,
+    });
+  } catch (err: any) {
+    console.error("resumePayment failed:", err.error || err.message);
+    res.status(502).json({ success: false, message: "Couldn't start the payment. Please try again shortly." });
+  }
+};
+
+// Sends the WhatsApp reminder for one unpaid order, unless Razorpay shows it
+// was paid after all, in which case it is marked paid instead. `order` must
+// have userId populated (for the account's mobile number).
+async function remindToPay(order: any, actor: { id: string | null; name: string }) {
+  const { items: payments } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+  const captured = payments.find((p) => p.status === "captured");
+  if (captured) {
+    const updated = await markOrderPaid(order.razorpayOrderId, captured.id, undefined);
+    logAdminAction({
+      actorId: actor.id,
+      actor: actor.name,
+      action: "order.payment.sync",
+      targetType: "Order",
+      targetId: order.orderId,
+      meta: { razorpayPaymentId: captured.id, amount: Number(captured.amount) / 100, automatic: !actor.id },
+    });
+    return { sent: false, order: updated, message: `No reminder sent: the customer had already paid (${captured.id}). Order marked paid.` };
+  }
+
+  const user = order.userId as any;
+  const phone = user?.mobile || order.shippingAddress?.phone;
+  if (!phone) {
+    return { sent: false, order, message: "No reminder sent: this order has no phone number." };
+  }
+
+  await sendPaymentReminder(
+    phone,
+    order.customerName || user?.name || "there",
+    order.orderId,
+    amountDue(order).toLocaleString("en-IN"),
+    `https://lapshark.com/orders/${order.orderId}`,
+  );
+  const updated = await Order.findOneAndUpdate(
+    { _id: order._id },
+    { $set: { "paymentReminder.sentAt": new Date(), "paymentReminder.lastBy": actor.id || actor.name }, $inc: { "paymentReminder.count": 1 } },
+    { new: true },
+  );
+  // The abandoned-cart bot (wamigo, /cart/all) would otherwise message the
+  // same customer about the same laptop. Any cart change resets this.
+  if (user?._id) await Cart.updateOne({ userId: user._id }, { $set: { notified: true } });
+  logAdminAction({
+    actorId: actor.id,
+    actor: actor.name,
+    action: "order.payment.reminder",
+    targetType: "Order",
+    targetId: order.orderId,
+    meta: { automatic: !actor.id },
+  });
+  return { sent: true, order: updated, message: "Payment reminder sent on WhatsApp." };
+}
+
+// Admin "Send payment reminder" in the order panel. Allowed again after an
+// automatic reminder, for a follow-up.
+export const sendPaymentReminderToCustomer = async (req: Request, res: Response) => {
+  try {
+    if (!paymentReminderConfigured()) {
+      return res.status(400).json({
+        success: false,
+        message: "The WhatsApp payment reminder template isn't set up yet (WHATSAPP_SAAS_PAYMENT_REMINDER_TEMPLATE_ID).",
+      });
+    }
+    const reqUser = (req as any).user;
+    const order = await Order.findOne({ orderId: req.params.id }).populate("userId", "mobile name");
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (order.paymentStatus !== "Pending" || order.status !== "Pending" || order.cancellation?.status) {
+      return res.status(400).json({ success: false, message: "Only unpaid orders that are still Pending can be reminded." });
+    }
+    if (!order.razorpayOrderId?.startsWith("order_")) {
+      return res.status(400).json({ success: false, message: "This order has no Razorpay checkout to pay." });
+    }
+
+    const result = await remindToPay(order, { id: reqUser?.id || null, name: reqUser?.name || "admin" });
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    console.error("Payment reminder failed:", err.response?.data || err.error || err.message);
+    // chat.lapshark.com says e.g. "Template is not approved yet." Show it
+    // rather than a generic message, as requestReview does.
+    const reason = err.response?.data?.message;
+    res.status(502).json({
+      success: false,
+      message: typeof reason === "string" ? reason : "Could not send the reminder. Try again shortly.",
+    });
+  }
+};
+
+// Automatic reminders: every 10 minutes, one WhatsApp per customer for their
+// latest order left unpaid 1h-24h ago (rules in utils/paymentReminder.ts).
+// At most one automatic reminder per order. Off until the template id is
+// set. The reconciler above has usually recorded any payment that went
+// through already, and remindToPay checks Razorpay again before sending.
+const REMIND_EVERY_MS = 10 * 60 * 1000;
+
+async function sendDuePaymentReminders() {
+  const since = new Date(Date.now() - REMIND_WITHIN_MS);
+  const pending = await Order.find({
+    paymentStatus: "Pending",
+    status: "Pending",
+    razorpayOrderId: /^order_/,
+    "cancellation.status": { $exists: false },
+    createdAt: { $gte: since },
+  }).populate("userId", "mobile name");
+  if (!pending.length) return;
+
+  const paid = await Order.find({ paymentStatus: { $in: ["Paid", "Refunded"] }, createdAt: { $gte: since } })
+    .select("userId shippingAddress createdAt");
+  const due = pickOrdersToRemind(
+    pending.map((o: any) => ({ orderId: o.orderId, customerKey: customerKeyOf(o), createdAt: o.createdAt, reminded: !!o.paymentReminder?.sentAt })),
+    paid.map((o: any) => ({ customerKey: customerKeyOf(o), createdAt: o.createdAt })),
+    Date.now(),
+  );
+
+  for (const orderId of due) {
+    const order = pending.find((o) => o.orderId === orderId);
+    try {
+      const result = await remindToPay(order, { id: null, name: "payment-reminder" });
+      console.log(`Payment reminder: ${orderId}: ${result.message}`);
+    } catch (err: any) {
+      console.error(`Payment reminder: couldn't remind ${orderId}:`, err.response?.data || err.error || err.message);
+    }
+  }
+}
+
+let remindRunning = false;
+export function startPaymentReminders() {
+  if (!process.env.RAZORPAY_KEY || !process.env.RAZORPAY_SECRET) return;
+  if (!paymentReminderConfigured()) {
+    console.log("Payment reminders off: WHATSAPP_SAAS_PAYMENT_REMINDER_TEMPLATE_ID not set.");
+    return;
+  }
+  const run = async () => {
+    if (remindRunning) return;
+    remindRunning = true;
+    try {
+      await sendDuePaymentReminders();
+    } catch (err: any) {
+      console.error("Payment reminder run failed:", err.message);
+    } finally {
+      remindRunning = false;
+    }
+  };
+  setTimeout(run, 2 * 60 * 1000);
+  setInterval(run, REMIND_EVERY_MS);
+}
