@@ -2,7 +2,7 @@
 // call, matching the codebase's no-framework selftest convention.
 // Run: npx ts-node src/utils/paymentReminder.selftest.ts (or `npm test`)
 import assert from "assert";
-import { pickOrdersToRemind, customerKeyOf, amountDue, ReminderCandidate } from "./paymentReminder";
+import { pickOrdersToRemind, customerKeyOf, amountDue, greetingName, ReminderCandidate } from "./paymentReminder";
 
 const HOUR = 60 * 60 * 1000;
 const now = Date.UTC(2026, 9, 15, 12, 0, 0);
@@ -62,6 +62,15 @@ function main() {
   // 9. amountDue: the advance for COD, the total for prepaid.
   assert.strictEqual(amountDue({ paymentMethod: "COD", advanceAmount: 500, total: 25000 }), 500);
   assert.strictEqual(amountDue({ paymentMethod: "Online", advanceAmount: 0, total: 25000 }), 25000);
+
+  // 10. greetingName: an address typed into the name field is skipped.
+  assert.strictEqual(greetingName("Ravi Kumar , MG Road , Indiranagar ", "Ravi Kumar"), "Ravi Kumar");
+  assert.strictEqual(greetingName("Ravi Kumar , MG Road , Indiranagar ", undefined), "there");
+  assert.strictEqual(greetingName("Anita Sharma", "Other"), "Anita Sharma");
+  assert.strictEqual(greetingName("  Rahul   Verma "), "Rahul Verma");
+  assert.strictEqual(greetingName("Flat 12 MG Road"), "there");
+  assert.strictEqual(greetingName("one two three four five"), "there");
+  assert.strictEqual(greetingName("", null, undefined), "there");
 
   console.log("paymentReminder: all checks passed");
 }

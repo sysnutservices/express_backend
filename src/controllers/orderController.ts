@@ -17,7 +17,7 @@ import { normalizeSerialNumber, findSerialConflict } from "../utils/serialNumber
 import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_STATUSES } from "../utils/cancellation";
 import { logAdminAction } from "../models/AuditLog";
 import Cart from "../models/Cart";
-import { pickOrdersToRemind, customerKeyOf, amountDue, REMIND_WITHIN_MS } from "../utils/paymentReminder";
+import { pickOrdersToRemind, customerKeyOf, amountDue, greetingName, REMIND_WITHIN_MS } from "../utils/paymentReminder";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -1594,7 +1594,7 @@ async function remindToPay(order: any, actor: { id: string | null; name: string 
 
   await sendPaymentReminder(
     phone,
-    order.customerName || user?.name || "there",
+    greetingName(order.customerName, user?.name),
     order.orderId,
     amountDue(order).toLocaleString("en-IN"),
     `https://lapshark.com/orders/${order.orderId}`,
