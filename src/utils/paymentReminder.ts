@@ -32,6 +32,18 @@ export function amountDue(order: { paymentMethod?: string; advanceAmount?: numbe
   return order.paymentMethod === "COD" && order.advanceAmount ? order.advanceAmount : order.total;
 }
 
+// The name after "Hi" in the reminder. Customers sometimes type their
+// address into the name field at checkout ("Ravi Kumar , MG Road ,
+// Indiranagar"), so a name with a comma or digit, or longer than 4 words, is
+// skipped for the next one, and "there" if none looks like a name.
+export function greetingName(...names: (string | undefined | null)[]): string {
+  for (const raw of names) {
+    const name = (raw || "").replace(/\s+/g, " ").trim();
+    if (name && !/[,\d]/.test(name) && name.split(" ").length <= 4) return name;
+  }
+  return "there";
+}
+
 // `pending`: every Pending/Pending order from the last REMIND_WITHIN_MS,
 // including ones too fresh to remind and ones already reminded. `paid`: the
 // same customers' paid orders. Returns the orderIds to remind now.
