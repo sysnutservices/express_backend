@@ -5,6 +5,7 @@ dotenv.config();
 import Razorpay from "razorpay";
 import Order from "../models/Order";
 import Product from "../models/Product";
+import { orderItemsSummary } from "../utils/orderItemsSummary";
 import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrderConfirmation, sendShipmentConfirmation, sendDeliveryConfirmation, sendCancellationRequested, sendCancellationApproved, sendCancellationRejected, sendReviewRequest, sendPaymentReminder, paymentReminderConfigured } from "../services/wa";
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
@@ -436,7 +437,7 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
       // see/quote. order.total is a number — the whatsapp-saas API 400s
       // ("each value in params must be a string") if it isn't stringified
       // first, which is what was actually triggering this in practice.
-      await sendOrderConfirmation(customerPhone, customerName, order.orderId);
+      await sendOrderConfirmation(customerPhone, customerName, order.orderId, orderItemsSummary(order.items as any));
       await sendAdminOrderConfirmationPayload(customerName, customerPhone, order.orderId, order.total.toLocaleString("en-IN"), order.date);
     } catch (err: any) {
       console.error("Order confirmation WhatsApp message(s) failed:", err.response?.data || err.message);
