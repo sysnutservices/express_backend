@@ -29,6 +29,12 @@ const TEMPLATE_IDS = {
     // shipped! Tracking ID: {{3}}. Track here: {{4}}"), get it
     // Meta-approved, then set WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID.
     shipmentCreated: process.env.WHATSAPP_SAAS_SHIPMENT_TEMPLATE_ID,
+    // Order confirmation that also lists the items with RAM/SSD. No default
+    // id: create it on chat.lapshark.com with three params, e.g. "Hi {{1}},
+    // your order {{2}} is confirmed. Items: {{3}}", get it Meta-approved,
+    // then set WHATSAPP_SAAS_ORDER_CONFIRMATION_ITEMS_TEMPLATE_ID. Until
+    // then sendOrderConfirmation keeps using the two-param template above.
+    orderConfirmationItems: process.env.WHATSAPP_SAAS_ORDER_CONFIRMATION_ITEMS_TEMPLATE_ID,
     delivered: process.env.WHATSAPP_SAAS_DELIVERED_TEMPLATE_ID,
     // Created on chat.lapshark.com and submitted to Meta 2026-09-14 (status
     // PENDING review at that time) — real default ids, same as
@@ -131,8 +137,11 @@ export async function getContactName(mobile: string): Promise<string | null> {
     }
 }
 
-export async function sendOrderConfirmation(to: string, customerName: string, orderId: string) {
+export async function sendOrderConfirmation(to: string, customerName: string, orderId: string, itemsSummary?: string) {
     try {
+        if (TEMPLATE_IDS.orderConfirmationItems && itemsSummary) {
+            return await sendTemplate(TEMPLATE_IDS.orderConfirmationItems, to, [customerName, orderId, itemsSummary]);
+        }
         return await sendTemplate(TEMPLATE_IDS.orderConfirmation, to, [customerName, orderId]);
     } catch (error: any) {
         console.error("WhatsApp Order Confirmation Error:", error.response?.data || error);
