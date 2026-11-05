@@ -122,10 +122,8 @@ export interface ShipmentResult {
   labelUrl?: string;
 }
 
-// Called once, when an order first moves to "Shipped" (orderController's
-// updateOrderStatus guards on order.shipment?.awb already being set so this
-// never double-books a shipment for the same order).
-export async function createShipment(order: {
+// Shared with services/delhivery.ts so both couriers take the same input.
+export interface CreateShipmentInput {
   orderId: string;
   customerName: string;
   shippingAddress: { street: string; city: string; state: string; zip: string; phone: string };
@@ -139,7 +137,12 @@ export async function createShipment(order: {
   items: Array<{ title: string; quantity: number; finalPrice: number }>;
   totalWeightKg: number;
   dimsCm: { length: number; width: number; height: number };
-}): Promise<ShipmentResult> {
+}
+
+// Called once, when an order first moves to "Shipped" (orderController's
+// updateOrderStatus guards on order.shipment?.awb already being set so this
+// never double-books a shipment for the same order).
+export async function createShipment(order: CreateShipmentInput): Promise<ShipmentResult> {
   const isCOD = order.paymentMethod === "COD" && order.codAmount > 0;
   const phone = tenDigitPhone(order.shippingAddress.phone);
   const productsDesc = order.items.map((i) => `${i.title} x${i.quantity}`).join(", ").slice(0, 500);

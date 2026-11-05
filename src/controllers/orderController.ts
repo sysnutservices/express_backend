@@ -10,7 +10,8 @@ import { sendAdminLoanEnquiryPayload, sendAdminOrderConfirmationPayload, sendOrd
 import { LoanEnquiry } from "../models/Enquiry";
 import { validateAndComputeCoupon, markCouponUsed } from "./couponController";
 import { calculateProductPrice } from "../utils/pricing";
-import * as ekart from "../services/ekart";
+import * as courier from "../services/courier";
+import { trackShipments, mapDelhiveryStatus } from "../services/delhivery";
 import BehaviorEvent from "../models/BehaviorEvent";
 import { sendCapiEvent, parseFbCookies } from "../services/metaCapi";
 import { nextSeq } from "../models/Counter";
@@ -51,7 +52,7 @@ const razorpay = new Razorpay({
 // PINCODE SERVICEABILITY — checkout UX guardrail, not an authority
 // =========================================================
 // Called from the checkout address step, before payment, so a customer in an
-// area Ekart can't reach finds out before paying instead of after (the
+// area the courier can't reach finds out before paying instead of after (the
 // previous failure mode: shipment creation fails post-payment, admin sorts
 // it out manually). Not a trust boundary — createOrder/updateOrderStatus
 // don't rely on this having been called, so there's nothing to enforce here
@@ -62,7 +63,7 @@ export const checkPincodeServiceability = async (req: Request, res: Response) =>
     if (!/^\d{6}$/.test(pincode)) {
       return res.status(400).json({ success: false, message: "Invalid pincode" });
     }
-    const result = await ekart.checkServiceability(pincode);
+    const result = await courier.checkServiceability(pincode);
     res.json({ success: true, ...result });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -670,6 +671,35 @@ const hasValidEkartSignature = (headers: Request["headers"], rawBody: Buffer, se
   );
 };
 
+// Shared by the Ekart webhook and the Delhivery tracking job: sets the order
+// status from a courier update and sends the delivery WhatsApp once.
+async function applyCourierStatus(awb: string, courierStatus: string, mappedStatus: string) {
+  const update: Record<string, unknown> = {
+    status: mappedStatus,
+    "shipment.courierStatus": courierStatus,
+  };
+  if (mappedStatus === "Delivered") update["shipment.deliveredAt"] = new Date();
+
+  // Same idempotency shape as markOrderPaid's paymentStatus guard: a
+  // repeat/duplicate Delivered event for an order already marked
+  // Delivered is a no-op instead of re-sending the WhatsApp message.
+  const filter: Record<string, unknown> = { "shipment.awb": awb };
+  if (mappedStatus === "Delivered") filter.status = { $ne: "Delivered" };
+
+  const order = await Order.findOneAndUpdate(filter, update, { new: true });
+  if (order && mappedStatus === "Delivered") {
+    try {
+      await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
+    } catch (waErr: any) {
+      console.error("Delivery confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
+    }
+  }
+  return order;
+}
+
+// Ekart only: shipments booked before the switch to Delhivery still report
+// here until they're delivered. Delhivery status comes from
+// startShipmentTracker below instead.
 export const shipmentWebhook = async (req: Request, res: Response) => {
   try {
     const secret = process.env.EKART_WEBHOOK_SECRET;
@@ -704,29 +734,8 @@ export const shipmentWebhook = async (req: Request, res: Response) => {
     if (awb && !mappedStatus) console.log(`Ekart webhook: unmapped status "${courierStatus}" for ${awb} — ignored`);
 
     if (awb && mappedStatus) {
-      const update: Record<string, unknown> = {
-        status: mappedStatus,
-        "shipment.courierStatus": courierStatus,
-      };
-      if (mappedStatus === "Delivered") update["shipment.deliveredAt"] = new Date();
-
-      // Same idempotency shape as markOrderPaid's paymentStatus guard: a
-      // repeat/duplicate Delivered event for an order already marked
-      // Delivered is a no-op instead of re-sending the WhatsApp message.
-      const filter: Record<string, unknown> = { "shipment.awb": awb };
-      if (mappedStatus === "Delivered") filter.status = { $ne: "Delivered" };
-
-      const order = await Order.findOneAndUpdate(filter, update, { new: true });
+      const order = await applyCourierStatus(String(awb), String(courierStatus), mappedStatus);
       if (!order) console.warn(`Ekart webhook: no order updated for awb ${awb} (status "${courierStatus}")`);
-      if (order) {
-        if (mappedStatus === "Delivered") {
-          try {
-            await sendDeliveryConfirmation(order.shippingAddress.phone, order.customerName, order.orderId);
-          } catch (waErr: any) {
-            console.error("Delivery confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
-          }
-        }
-      }
     }
 
     // Same reasoning as razorpayWebhook: fast 2xx for events we don't act on
@@ -804,9 +813,10 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    // Moving to Shipped either books the real Ekart shipment, or — when the
-    // admin ships it themselves (local delivery, a courier Ekart doesn't
-    // cover) — just records whatever tracking info they typed in, no
+    // Moving to Shipped either books the real courier shipment (Delhivery,
+    // or Ekart if Delhivery isn't configured — see services/courier.ts), or —
+    // when the admin ships it themselves (local delivery, an uncovered area)
+    // — just records whatever tracking info they typed in, no
     // courier API call. Gated on shippedAt (not awb, since a manual
     // shipment may have none) so re-clicking Shipped doesn't redo either
     // path for the same order.
@@ -866,14 +876,14 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
       }
 
       try {
-        const shipment = await ekart.createShipment({
+        const shipment = await courier.createShipment({
           orderId: order.orderId,
           customerName: order.customerName,
           shippingAddress: order.shippingAddress as any,
           total: order.total,
           paymentMethod: order.paymentMethod,
           // Balance already collected (see setCodCollected) → nothing left
-          // for the courier to collect; ekart then books it as Prepaid.
+          // for the courier to collect; it's then booked as Prepaid.
           codAmount: order.codCollected?.at ? 0 : order.total - (order.advanceAmount || 0),
           items: order.items as any,
           totalWeightKg,
@@ -884,10 +894,11 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
           labelUrl: shipment.labelUrl,
           trackingUrl: shipment.trackingUrl,
           shippedAt: new Date(),
+          courier: shipment.courier,
         };
 
         // Best-effort, same reasoning as the payment-confirmation WhatsApp
-        // sends: the shipment is already booked with Ekart at this point, so
+        // sends: the shipment is already booked with the courier, so
         // a WhatsApp delivery hiccup must not fail the status update itself.
         try {
           await sendShipmentConfirmation(
@@ -901,10 +912,10 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
           console.error("Shipment confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
         }
       } catch (shipErr: any) {
-        console.error("Ekart shipment creation failed:", shipErr.response?.data || shipErr.message);
+        console.error(`${courier.activeCourier()} shipment creation failed:`, shipErr.response?.data || shipErr.message);
         return res.status(502).json({
           success: false,
-          message: "Could not create courier shipment. Order status left unchanged — retry once the courier issue is resolved.",
+          message: `Could not create courier shipment${shipErr.courierMessage ? ` (${shipErr.courierMessage})` : ""}. Order status left unchanged — retry once the courier issue is resolved, or ship it manually.`,
         });
       }
     }
@@ -1108,14 +1119,15 @@ export const cancelOrder = async (req: Request, res: Response) => {
       await restoreOrderStock(claimed._id);
     }
 
-    if (claimed.shipment?.awb) {
+    // Manual shipments were never booked through a courier API.
+    if (claimed.shipment?.awb && !claimed.shipment.manual) {
       try {
-        await ekart.cancelShipment(claimed.shipment.awb);
+        await courier.cancelShipment(claimed.shipment.awb, claimed.shipment.courier);
       } catch (err: any) {
         // Best-effort: a courier-side cancel failure (already picked up, API
         // hiccup) shouldn't block cancelling the order on our side — logged
-        // so it can be cancelled manually via the Ekart dashboard if needed.
-        console.error("Ekart shipment cancel failed:", err.response?.data || err.message);
+        // so it can be cancelled manually in the courier's dashboard.
+        console.error(`${claimed.shipment.courier || "ekart"} shipment cancel failed:`, err.response?.data || err.message);
       }
     }
 
@@ -1490,6 +1502,60 @@ export function startPaymentReconciler() {
   };
   setTimeout(run, 60 * 1000);
   setInterval(run, RECONCILE_EVERY_MS);
+}
+
+// Delhivery status sync. Polls Delhivery's tracking API for every booked
+// Delhivery shipment that isn't delivered/returned yet and applies the same
+// status update the Ekart webhook does (Shipped → Out for Delivery →
+// Delivered, or RTO), so no webhook registration with Delhivery is needed.
+const TRACK_EVERY_MS = 30 * 60 * 1000;
+let trackRunning = false;
+async function syncDelhiveryShipments() {
+  const orders = await Order.find({
+    "shipment.courier": "delhivery",
+    "shipment.manual": { $ne: true },
+    "shipment.awb": { $exists: true, $ne: "" },
+    status: { $in: ["Shipped", "Out for Delivery"] },
+  }).select("orderId status shipment.awb shipment.courierStatus");
+
+  let updated = 0;
+  for (let i = 0; i < orders.length; i += 50) {
+    const batch = orders.slice(i, i + 50);
+    let tracked;
+    try {
+      tracked = await trackShipments(batch.map((o) => o.shipment!.awb!));
+    } catch (err: any) {
+      console.error("Delhivery tracking request failed:", err.response?.data || err.message);
+      continue;
+    }
+    for (const t of tracked) {
+      const order = batch.find((o) => o.shipment?.awb === t.awb);
+      const mapped = mapDelhiveryStatus(t.status, t.statusType);
+      if (!order || !mapped) continue;
+      if (mapped === order.status && t.status === order.shipment?.courierStatus) continue;
+      await applyCourierStatus(t.awb, t.status, mapped);
+      updated++;
+    }
+  }
+  return { checked: orders.length, updated };
+}
+
+export function startShipmentTracker() {
+  if (!process.env.DELHIVERY_API_TOKEN) return;
+  const run = async () => {
+    if (trackRunning) return;
+    trackRunning = true;
+    try {
+      const { checked, updated } = await syncDelhiveryShipments();
+      if (updated) console.log(`Delhivery tracker: ${updated} of ${checked} shipments updated`);
+    } catch (err: any) {
+      console.error("Delhivery tracker run failed:", err.message);
+    } finally {
+      trackRunning = false;
+    }
+  };
+  setTimeout(run, 2 * 60 * 1000);
+  setInterval(run, TRACK_EVERY_MS);
 }
 
 // Admin, read-only: unpaid orders from the last ?days= (default 30, max 365)

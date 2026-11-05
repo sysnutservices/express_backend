@@ -92,6 +92,9 @@ export interface IOrder extends Document {
     // in, not values Ekart's API returned.
     manual?: boolean;
     courierName?: string;
+    // Which courier API booked it ("delhivery" | "ekart"). Unset on orders
+    // booked before Delhivery was added = Ekart.
+    courier?: string;
   };
   refund?: {
     id?: string;
@@ -178,6 +181,7 @@ const OrderSchema = new Schema(
       deliveredAt: { type: Date },
       manual: { type: Boolean },
       courierName: { type: String },
+      courier: { type: String },
     },
 
     refund: {
