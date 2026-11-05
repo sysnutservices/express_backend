@@ -126,7 +126,8 @@ router.post("/orders/:id/resume-payment", protect, resumePayment);
 
 // Pincode check at the checkout address step — public, no order/user context needed.
 router.get("/shipping/serviceability/:pincode", checkPincodeServiceability);
-// Ekart's own server calls this — see shipmentWebhook's comment for why no protect.
+// Ekart's own server calls this (legacy Ekart shipments only; Delhivery is
+// polled by startShipmentTracker) — see shipmentWebhook's comment for why no protect.
 router.post("/orders/shipment-webhook", shipmentWebhook);
 
 // Site Config
