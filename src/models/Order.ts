@@ -77,6 +77,11 @@ export interface IOrder extends Document {
     extraOfferLabel?: string;
     // Not set anywhere yet — see the schema field's comment below.
     serialNumber?: string;
+    // RAM/SSD/warranty add-on part of finalPrice (₹). Ambassador commission
+    // treats add-ons at face value. Undefined on orders before 2026-11.
+    configCost?: number;
+    // Set when the line was priced from an ambassador quotation.
+    quoteItemId?: mongoose.Types.ObjectId;
   }>;
   paidAt?: Date; // ✅ ADD THIS
   shipment?: {
@@ -130,6 +135,20 @@ export interface IOrder extends Document {
     sentAt: Date;
     count: number;
     lastBy?: string; // admin user id, or "payment-reminder" for the sweep
+  };
+  // Sales Ambassador referral captured at checkout (?ref= link). Absent on
+  // every order without a valid code. Attribution itself is decided when the
+  // order is paid (ambassador/services/orderHooks.ts), not here.
+  ambassadorRef?: {
+    code: string;
+    ambassadorId: mongoose.Types.ObjectId;
+    capturedAt: Date;
+  };
+  // Order placed from an ambassador quotation link (price lock).
+  ambassadorQuote?: {
+    quotationId: mongoose.Types.ObjectId;
+    quoteNumber: string;
+    version: number;
   };
 }
 
@@ -219,6 +238,29 @@ const OrderSchema = new Schema(
       lastBy: { type: String },
     },
 
+    ambassadorRef: {
+      type: new Schema(
+        {
+          code: { type: String, required: true },
+          ambassadorId: { type: mongoose.Schema.Types.ObjectId, ref: "AmbassadorProfile", required: true },
+          capturedAt: { type: Date, required: true },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    ambassadorQuote: {
+      type: new Schema(
+        {
+          quotationId: { type: mongoose.Schema.Types.ObjectId, ref: "AmbassadorQuotation", required: true },
+          quoteNumber: { type: String, required: true },
+          version: { type: Number, required: true },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     paymentStatus: {
       type: String,
       enum: ["Paid", "Pending", "Failed", "Refunded"],
@@ -247,6 +289,8 @@ const OrderSchema = new Schema(
         // warranty card can show the real serial once one exists, instead
         // of that becoming a second schema migration later.
         serialNumber: { type: String },
+        configCost: { type: Number },
+        quoteItemId: { type: mongoose.Schema.Types.ObjectId },
       },
     ],
   },

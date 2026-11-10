@@ -31,6 +31,9 @@ export interface IUser extends Document {
   // Set on every successful customer OTP login — drives the admin panel's
   // "just logged in" popup (GET /users/recent-logins).
   lastLoginAt?: Date;
+  // Admin sub-role for the Sales Ambassador module (ambassador/middleware.ts).
+  // Unset on an admin = super_admin, so every existing admin keeps full access.
+  staffRole?: 'super_admin' | 'sales_admin' | 'operations' | 'finance';
 }
 export const AddressSchema = new Schema<Address>(
   {
@@ -63,7 +66,8 @@ const UserSchema: Schema = new Schema({
   ordersCount: { type: Number, default: 0 },
   status: { type: String, enum: ['active', 'blocked'], default: 'active' },
   tokenVersion: { type: Number, default: 0 },
-  lastLoginAt: { type: Date, index: true }
+  lastLoginAt: { type: Date, index: true },
+  staffRole: { type: String, enum: ['super_admin', 'sales_admin', 'operations', 'finance'] }
 }, {
   timestamps: true
 });

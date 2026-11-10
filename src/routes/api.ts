@@ -20,6 +20,7 @@ import { getCart, addToCart, mergeGuestCart, updateCartItem, removeCartItem, cle
 import { getProductReviews, createReview, deleteReview, getFeaturedReviews } from '../controllers/reviewController';
 import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
 import { saveExtraOffer, removeExtraOffer } from '../controllers/extraOfferController';
+import ambassadorRoutes from '../ambassador/routes';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -225,4 +226,7 @@ router.delete("/cart/clear", protect, clearCart);
 
 // PUBLIC
 router.get("/public", getAllBlogs);
+
+// Sales Ambassador Network (/partners/*, /admin/partners/*, /admin/commission-rules, ...)
+router.use(ambassadorRoutes);
 export default router;

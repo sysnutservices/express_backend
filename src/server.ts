@@ -8,6 +8,7 @@ import path from 'path';
 import connectDB from './config/db';
 import { globalApiLimiter } from './middleware/rateLimiters';
 import { startPaymentReconciler, startPaymentReminders, startShipmentTracker } from './controllers/orderController';
+import { startEligibilityJob } from './ambassador/services/payoutService';
 
 dotenv.config();
 
@@ -64,4 +65,5 @@ app.listen(5000, "0.0.0.0", () => {
   startPaymentReconciler();
   startPaymentReminders();
   startShipmentTracker();
+  startEligibilityJob();
 });
