@@ -67,6 +67,10 @@ function tenDigitPhone(raw: string): number {
 
 export interface ServiceabilityResult {
   serviceable: boolean;
+  // Whether the courier collects cash on delivery at this pincode. Only the
+  // Delhivery check sets it; when it's missing, COD falls back to the
+  // Bangalore-only rule (courier.isCodAvailable, checkout's codAllowed).
+  cod?: boolean;
   etaDays?: number;
   message?: string;
 }

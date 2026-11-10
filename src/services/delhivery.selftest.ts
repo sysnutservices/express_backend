@@ -21,6 +21,9 @@ async function main() {
         const codes =
           pin === "560001" ? [{ postal_code: { pin: 560001, pre_paid: "Y", cod: "Y", remarks: "" } }]
           : pin === "110001" ? [{ postal_code: { pin: 110001, pre_paid: "Y", cod: "N", remarks: "Embargo" } }]
+          : pin === "400001" ? [{ postal_code: { pin: 400001, pre_paid: "Y", cod: "Y", remarks: "", max_amount: 0 } }]
+          : pin === "700001" ? [{ postal_code: { pin: 700001, pre_paid: "Y", cod: "N", remarks: "" } }]
+          : pin === "600001" ? [{ postal_code: { pin: 600001, pre_paid: "Y", cod: "Y", remarks: "", max_amount: 20000 } }]
           : [];
         return res.end(JSON.stringify({ delivery_codes: codes }));
       }
@@ -49,10 +52,20 @@ async function main() {
 
   try {
     // Serviceability: served, embargoed, unknown.
-    assert.deepStrictEqual(await d.checkServiceability("560001"), { serviceable: true });
+    assert.deepStrictEqual(await d.checkServiceability("560001"), { serviceable: true, cod: true });
+    assert.deepStrictEqual(await d.checkServiceability("700001"), { serviceable: true, cod: false });
     assert.strictEqual((await d.checkServiceability("110001")).serviceable, false);
     assert.strictEqual((await d.checkServiceability("999999")).serviceable, false);
     assert.strictEqual(seen[0].auth, "Token test-token");
+
+    // COD at order creation: Delhivery's cod flag, embargo, per-pincode cap.
+    assert.strictEqual(await d.checkCod("560001", 21500), true);
+    assert.strictEqual(await d.checkCod("400001", 90000), true); // max_amount 0 = no cap
+    assert.strictEqual(await d.checkCod("700001", 21500), false); // prepaid-only pincode
+    assert.strictEqual(await d.checkCod("110001", 21500), false); // embargoed
+    assert.strictEqual(await d.checkCod("999999", 21500), false); // not served
+    assert.strictEqual(await d.checkCod("600001", 19500), true);
+    assert.strictEqual(await d.checkCod("600001", 21500), false); // over the cap
 
     // Create: form-encoded JSON, COD amount, cleaned address, grams.
     const input = {

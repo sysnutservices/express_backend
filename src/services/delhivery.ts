@@ -40,29 +40,50 @@ const clean = (v: unknown) =>
 
 const tenDigitPhone = (raw: string) => (raw || "").replace(/\D/g, "").slice(-10);
 
-// Checkout's pincode check. Delhivery's pincode API returns an empty
-// delivery_codes list for pincodes it doesn't serve, and remarks "Embargo"
-// for ones temporarily blocked. Fails open on API errors, like the Ekart
-// version: a courier API hiccup shouldn't block checkout.
+// Delhivery's pincode API returns an empty delivery_codes list for pincodes
+// it doesn't serve, and remarks "Embargo" for ones temporarily blocked.
+// Returns null for an unserved pincode; throws on API errors so each caller
+// picks its own failure mode.
+async function lookupPincode(pincode: string): Promise<any | null> {
+  const { data } = await client.get("/c/api/pin-codes/json/", {
+    headers: authHeaders(),
+    params: { filter_codes: pincode },
+  });
+  return data?.delivery_codes?.[0]?.postal_code || null;
+}
+
+const isEmbargoed = (pc: any) => /embargo/i.test(pc?.remarks || "");
+const codFlag = (pc: any) => !isEmbargoed(pc) && String(pc?.cod || "").toUpperCase() === "Y";
+
+// Checkout's pincode check. `cod` says whether Delhivery collects cash on
+// delivery there; checkout offers COD only when it's true. Fails open on API
+// errors, like the Ekart version (a courier API hiccup shouldn't block
+// checkout), and then leaves `cod` out so checkout falls back to its
+// Bangalore-only rule. createOrder re-checks COD itself (checkCod).
 export async function checkServiceability(pincode: string): Promise<ServiceabilityResult> {
   try {
-    const { data } = await client.get("/c/api/pin-codes/json/", {
-      headers: authHeaders(),
-      params: { filter_codes: pincode },
-    });
-    const pc = data?.delivery_codes?.[0]?.postal_code;
-    if (!pc) return { serviceable: false, message: "Not serviceable to this pincode" };
-    const embargo = /embargo/i.test(pc.remarks || "");
+    const pc = await lookupPincode(pincode);
+    if (!pc) return { serviceable: false, cod: false, message: "Not serviceable to this pincode" };
     const prepaid = String(pc.pre_paid || "").toUpperCase() === "Y";
-    const cod = String(pc.cod || "").toUpperCase() === "Y";
-    if (embargo || (!prepaid && !cod)) {
-      return { serviceable: false, message: "Delivery to this pincode is temporarily unavailable" };
+    const cod = codFlag(pc);
+    if (isEmbargoed(pc) || (!prepaid && !cod)) {
+      return { serviceable: false, cod: false, message: "Delivery to this pincode is temporarily unavailable" };
     }
-    return { serviceable: true };
+    return { serviceable: true, cod };
   } catch (error: any) {
     console.error("Delhivery serviceability check failed:", error.response?.data || error.message);
     return { serviceable: true, message: "Serviceability check unavailable" };
   }
+}
+
+// Whether Delhivery will collect `codAmount` in cash at this pincode. The
+// authority for COD at order creation. max_amount is the pincode's COD cap
+// when Delhivery sets one (0 or missing = no cap). Throws on API errors.
+export async function checkCod(pincode: string, codAmount: number): Promise<boolean> {
+  const pc = await lookupPincode(pincode);
+  if (!pc || !codFlag(pc)) return false;
+  const cap = Number(pc.max_amount);
+  return !(cap > 0 && codAmount > cap);
 }
 
 // Called once, when an order first moves to "Shipped". Waybill is left blank

@@ -87,8 +87,6 @@ function outOfStockTitles(items: { productId: any; quantity: number }[], product
 // =========================================================
 // 1️⃣ CREATE ORDER (Internal + Razorpay Order)
 // =========================================================
-const isCodPincode = (zip: unknown) => /^560\d{3}$/.test(String(zip ?? "").trim());
-
 export const createOrder = async (req: Request, res: Response) => {
   try {
     const {
@@ -112,15 +110,6 @@ export const createOrder = async (req: Request, res: Response) => {
     // laptop for a few hundred rupees. Same 1-5 range the cart enforces.
     if (items.some((i: any) => !Number.isInteger(i?.quantity) || i.quantity < 1 || i.quantity > 5)) {
       return res.status(400).json({ success: false, message: "Invalid item quantity. Please update your cart and try again." });
-    }
-    // COD is Bangalore-only (owner decision, 2026-11-03). Bangalore pincodes
-    // are 560xxx. The checkout page hides COD elsewhere; this is the real
-    // gate. Frontend copy: Lapshark lib/policies.ts isCodPincode.
-    if (paymentMethod === "COD" && !isCodPincode(shippingAddress?.zip)) {
-      return res.status(400).json({
-        success: false,
-        message: "Cash on Delivery is available only for Bangalore addresses. Please choose online payment.",
-      });
     }
 
     // ---- Fetch Products ----
@@ -278,6 +267,19 @@ export const createOrder = async (req: Request, res: Response) => {
     // courier-facing "cash still owed" (total - advanceAmount, see
     // updateOrderStatus) correctly comes out to 0 instead of double-charging.
     const advanceAmount = isCOD ? amountToCharge : 0;
+
+    // COD goes wherever the courier collects cash (pan-India on Delhivery,
+    // owner decision 2026-11-10; Bangalore-only fallback, see
+    // courier.isCodAvailable). This is the real gate: checkout only hides
+    // the option. Checked against the cash left to collect, since Delhivery
+    // can cap COD per pincode. Nothing left to collect = effectively prepaid.
+    const codToCollect = total - amountToCharge;
+    if (isCOD && codToCollect > 0 && !(await courier.isCodAvailable(shippingAddress?.zip, codToCollect))) {
+      return res.status(400).json({
+        success: false,
+        message: "Cash on Delivery isn't available for this pincode. Please choose online payment.",
+      });
+    }
 
     // ---- Create Razorpay Order ----
     const razorpayOrder = await razorpay.orders.create({
