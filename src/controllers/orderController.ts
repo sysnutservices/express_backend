@@ -20,6 +20,11 @@ import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_
 import { logAdminAction } from "../models/AuditLog";
 import Cart from "../models/Cart";
 import { pickOrdersToRemind, customerKeyOf, amountDue, greetingName, REMIND_WITHIN_MS } from "../utils/paymentReminder";
+// Sales Ambassador Network: referral capture + commission sync. Both are
+// best-effort and never throw into the order flow (see ambassador/services/orderHooks.ts).
+import { resolveReferralForNewOrder, syncOrderCommissionsSafe } from "../ambassador/services/orderHooks";
+import { loadQuoteForCheckout } from "../ambassador/services/quoteService";
+import { paiseToRupees } from "../ambassador/money";
 
 // Customer-facing order number: LS-YYYYMMDD-NN, distinct from Razorpay's own
 // order_xxxxxxxxxxxxxx id (still kept as razorpayOrderId, for the checkout
@@ -97,7 +102,10 @@ export const createOrder = async (req: Request, res: Response) => {
       shippingAddress,
       paymentMethod,
       coupon,
-      metaEventId
+      metaEventId,
+      referralCode,
+      referralCapturedAt,
+      quotationToken
     } = req.body;
 
     const userId = (req as any).user?.id || null;
@@ -111,6 +119,20 @@ export const createOrder = async (req: Request, res: Response) => {
     if (items.some((i: any) => !Number.isInteger(i?.quantity) || i.quantity < 1 || i.quantity > 5)) {
       return res.status(400).json({ success: false, message: "Invalid item quantity. Please update your cart and try again." });
     }
+
+    // ---- Ambassador quotation (price lock) ----
+    // Only when the customer checks out from a partner's quotation link
+    // (/quote/<token>). Each line is then charged at the quoted price instead
+    // of the live price; the cart must match the quotation exactly, and a
+    // coupon can't be stacked on a negotiated price. With no quotationToken
+    // nothing in this function changes.
+    let quoteLock: Awaited<ReturnType<typeof loadQuoteForCheckout>> | null = null;
+    if (quotationToken !== undefined && quotationToken !== null && quotationToken !== "") {
+      quoteLock = await loadQuoteForCheckout(quotationToken, items);
+      if (!quoteLock.ok) return res.status(quoteLock.status).json({ success: false, message: quoteLock.message });
+      if (coupon) return res.status(400).json({ success: false, message: "Coupons can't be combined with a quotation price." });
+    }
+    const lockedQuote = quoteLock && quoteLock.ok ? quoteLock : null;
 
     // ---- Fetch Products ----
     const productIds = items.map((i: any) => i.productId);
@@ -135,7 +157,7 @@ export const createOrder = async (req: Request, res: Response) => {
     let total = 0;
     let priceChanged = false;
     const priceChanges: Array<{ productId: string; title: string; oldPrice: number; newPrice: number }> = [];
-    const updatedItems = items.map((item: any) => {
+    const updatedItems = items.map((item: any, idx: number) => {
       const product = products.find(
         (p) => p._id.toString() === item.productId
       );
@@ -162,7 +184,11 @@ export const createOrder = async (req: Request, res: Response) => {
       // Extra Product Offer applies to the base selling price only, not to
       // config addon costs — same split productController/ProductCard use.
       const priced = calculateProductPrice(product.finalPrice, product.extraOffer);
-      const finalPrice = priced.finalPrice + configCost;
+      const quoteItem = lockedQuote ? lockedQuote.quote.items[idx] : undefined;
+      const livePrice = priced.finalPrice + configCost;
+      // Never more than today's live price: if an offer started after the
+      // quotation was issued, the customer gets the lower of the two.
+      const finalPrice = quoteItem ? Math.min(paiseToRupees(quoteItem.quotedUnitPaise), livePrice) : livePrice;
       const subtotal = finalPrice * item.quantity;
 
       total += subtotal;
@@ -188,9 +214,19 @@ export const createOrder = async (req: Request, res: Response) => {
           ...(ramOption ? { ram: ramOption.value } : {}),
           ...(storageOption ? { storage: storageOption.value } : {}),
         },
-        originalPrice: priced.offer ? priced.sellingPrice + configCost : undefined,
-        extraOfferDiscount: priced.offer?.discountAmount,
-        extraOfferLabel: priced.offer?.offerLabel,
+        ...(quoteItem
+          ? {
+              originalPrice: livePrice > finalPrice ? livePrice : undefined,
+              extraOfferDiscount: livePrice > finalPrice ? livePrice - finalPrice : undefined,
+              extraOfferLabel: `Partner quotation ${lockedQuote!.quote.quoteNumber}`,
+              quoteItemId: quoteItem._id,
+            }
+          : {
+              originalPrice: priced.offer ? priced.sellingPrice + configCost : undefined,
+              extraOfferDiscount: priced.offer?.discountAmount,
+              extraOfferLabel: priced.offer?.offerLabel,
+            }),
+        configCost,
       };
     });
 
@@ -288,6 +324,16 @@ export const createOrder = async (req: Request, res: Response) => {
       receipt: "order_" + Date.now()
     });
 
+    // Ambassador referral (?ref= link) — undefined for no/invalid/own code;
+    // never blocks checkout.
+    // A quotation order belongs to the partner who issued the quotation.
+    const ambassadorRef = lockedQuote
+      ? { code: lockedQuote.partner.partnerCode, ambassadorId: lockedQuote.partner._id, capturedAt: lockedQuote.quote.createdAt }
+      : await resolveReferralForNewOrder(referralCode, referralCapturedAt, userId ? String(userId) : null);
+    const ambassadorQuote = lockedQuote
+      ? { quotationId: lockedQuote.quote._id, quoteNumber: lockedQuote.quote.quoteNumber, version: lockedQuote.quote.version }
+      : undefined;
+
     // ---- Save Order in DB ----
     const newOrder = await Order.create({
       orderId: await generateOrderId(),
@@ -314,7 +360,9 @@ export const createOrder = async (req: Request, res: Response) => {
       },
       items: updatedItems,
       coupon: appliedCouponCode,
-      razorpayOrderId: razorpayOrder.id
+      razorpayOrderId: razorpayOrder.id,
+      ambassadorRef,
+      ambassadorQuote
     });
 
     return res.json({
@@ -512,6 +560,8 @@ async function markOrderPaid(razorpayOrderId: string, razorpayPaymentId: string,
     console.error("Meta CAPI purchase event failed:", err.response?.data || err.message);
   }
 
+  syncOrderCommissionsSafe(order._id as any);
+
   return order;
 }
 
@@ -613,6 +663,7 @@ export const razorpayWebhook = async (req: Request, res: Response) => {
           { $set: { "refund.status": status, paymentStatus: status === "processed" ? "Refunded" : "Paid" } }
         );
         if (!updated) console.warn(`refund webhook: no order found for refund.id ${refundId}`);
+        else syncOrderCommissionsSafe(updated._id as any);
       }
     }
 
@@ -699,6 +750,7 @@ async function applyCourierStatus(awb: string, courierStatus: string, mappedStat
       console.error("Delivery confirmation WhatsApp message failed:", waErr.response?.data || waErr.message);
     }
   }
+  if (order) syncOrderCommissionsSafe(order._id as any);
   return order;
 }
 
@@ -933,6 +985,7 @@ export const updateOrderStatus = async (req: Request, res: Response) => {
     order.status = status;
     if (status === "Delivered" && order.shipment) order.shipment.deliveredAt = new Date();
     await order.save();
+    syncOrderCommissionsSafe(order._id as any);
 
     if (status === "Delivered" && !wasAlreadyDelivered) {
       try {
@@ -1163,6 +1216,7 @@ export const cancelOrder = async (req: Request, res: Response) => {
 
     if (req.body.note) claimed.cancellation = { ...(claimed.cancellation as any), note: String(req.body.note).trim().slice(0, 1000) };
     await claimed.save();
+    syncOrderCommissionsSafe(claimed._id as any);
 
     logAdminAction({
       actorId: reqUser.id,
@@ -1490,6 +1544,7 @@ const retryRefundInner = async (req: Request, res: Response) => {
       },
       { new: true }
     );
+    if (updated) syncOrderCommissionsSafe(updated._id as any);
 
     logAdminAction({
       actorId: reqUser?.id,
