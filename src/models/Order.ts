@@ -99,8 +99,12 @@ export interface IOrder extends Document {
   refund?: {
     id?: string;
     amount?: number;
-    status?: string; // Razorpay's 'pending' | 'processed' | 'failed'
+    status?: string; // Razorpay's 'pending' | 'processed' | 'failed', or our own 'retrying' while a retry is in flight
     refundedAt?: Date;
+    // Razorpay's reason for the last failed attempt (e.g. not enough
+    // balance), shown in the admin order view next to "Retry refund".
+    error?: string;
+    retryStartedAt?: Date;
   };
   // Customer request -> admin approve/reject workflow. Absent entirely on
   // every order until a cancellation is first requested. This doubles as
@@ -189,6 +193,11 @@ const OrderSchema = new Schema(
       amount: { type: Number },
       status: { type: String },
       refundedAt: { type: Date },
+      // select: false — Razorpay's raw reason (e.g. our account balance) is
+      // admin-only. Customer order endpoints return the whole document, so
+      // it's only read where explicitly asked for with "+refund.error".
+      error: { type: String, select: false },
+      retryStartedAt: { type: Date },
     },
 
     cancellation: {
