@@ -605,7 +605,10 @@ export const razorpayWebhook = async (req: Request, res: Response) => {
         const status = event === "refund.processed" ? "processed" : "failed";
         const updated = await Order.findOneAndUpdate(
           { "refund.id": refundId },
-          { $set: { "refund.status": status, ...(status === "processed" ? { paymentStatus: "Refunded" } : {}) } }
+          // A failed refund means the money never went back, so the order is
+          // "Paid" again (cancelOrder set "Refunded" optimistically), which
+          // also makes it eligible for the admin "Retry refund" button.
+          { $set: { "refund.status": status, paymentStatus: status === "processed" ? "Refunded" : "Paid" } }
         );
         if (!updated) console.warn(`refund webhook: no order found for refund.id ${refundId}`);
       }
@@ -790,7 +793,7 @@ export const getOrderById = async (req: Request, res: Response) => {
 // =========================================================
 export const adminGetAllOrders = async (req: Request, res: Response) => {
   try {
-    const orders = await Order.find().sort({ createdAt: -1 });
+    const orders = await Order.find().select("+refund.error").sort({ createdAt: -1 });
 
     res.json({ success: true, orders });
   } catch (err: any) {
@@ -1146,7 +1149,7 @@ export const cancelOrder = async (req: Request, res: Response) => {
         // (surfaced in the admin order view) rather than silently left as
         // "Paid", which would read as nothing being owed to the customer.
         console.error("Razorpay refund failed:", err.error || err.message, { orderId: claimed.orderId, paymentId: claimed.razorpayPaymentId });
-        claimed.refund = { status: "failed" };
+        claimed.refund = { status: "failed", error: razorpayErrorMessage(err) };
       }
     }
     // Unpaid (Pending) orders are marked Failed on cancellation, same as
@@ -1379,6 +1382,146 @@ export const setCodCollected = async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error("setCodCollected failed:", err.message);
     res.status(500).json({ success: false, message: "Could not update payment." });
+  }
+};
+
+const RETRY_STALE_MS = 2 * 60 * 1000;
+
+// Razorpay's SDK rejects with { statusCode, error: { code, description } };
+// the description is the human-readable reason ("…not enough balance…").
+function razorpayErrorMessage(err: any): string {
+  const msg = err?.error?.description || err?.error?.reason || err?.message || "Unknown Razorpay error";
+  return String(msg).slice(0, 500);
+}
+
+// Admin "Retry refund": for a cancelled, paid order whose refund failed (at
+// cancellation approval, or later via the refund.failed webhook). Asks
+// Razorpay for the payment first, so a refund the admin already issued by
+// hand from the Razorpay dashboard is recorded rather than attempted twice.
+export const retryRefund = async (req: Request, res: Response) => {
+  try {
+    await retryRefundInner(req, res);
+  } catch (err: any) {
+    console.error("retryRefund failed:", err.message);
+    if (!res.headersSent) res.status(500).json({ success: false, message: "Couldn't retry the refund." });
+  }
+};
+
+const retryRefundInner = async (req: Request, res: Response) => {
+  const reqUser = (req as any).user;
+  // Atomic claim, same idiom as cancelOrder's approve: two clicks can't both
+  // reach razorpay.payments.refund. "retrying" is released on every exit path.
+  // A "retrying" claim older than RETRY_STALE_MS is treated as abandoned (the
+  // process died mid-request) so the order can't get stuck. Safe either way:
+  // the retry re-reads the payment from Razorpay before refunding anything.
+  const staleBefore = new Date(Date.now() - RETRY_STALE_MS);
+  const claimed = await Order.findOneAndUpdate(
+    {
+      orderId: req.params.id,
+      status: "Cancelled",
+      paymentStatus: { $in: ["Paid", "Refunded"] },
+      razorpayPaymentId: { $exists: true, $ne: "" },
+      $or: [
+        { "refund.status": "failed" },
+        { "refund.status": "retrying", "refund.retryStartedAt": { $lt: staleBefore } },
+      ],
+    },
+    { $set: { "refund.status": "retrying", "refund.retryStartedAt": new Date() } },
+    { new: true }
+  );
+  if (!claimed) {
+    const current = await Order.findOne({ orderId: req.params.id });
+    if (!current) return res.status(404).json({ success: false, message: "Order not found" });
+    if (current.refund?.status === "retrying") {
+      return res.status(409).json({ success: false, message: "A refund retry is already in progress for this order." });
+    }
+    return res.status(400).json({ success: false, message: "Only a cancelled, paid order with a failed refund can be retried." });
+  }
+
+  const release = (error: string) =>
+    Order.findOneAndUpdate(
+      { _id: claimed._id, "refund.status": "retrying" },
+      { $set: { "refund.status": "failed", "refund.error": error } },
+      { new: true }
+    ).select("+refund.error");
+
+  const paymentId = claimed.razorpayPaymentId as string;
+  try {
+    const payment = await razorpay.payments.fetch(paymentId);
+    const paymentAmount = Number(payment.amount);
+    const alreadyRefunded = Number(payment.amount_refunded || 0);
+
+    let refund: { id: string; amount: number; status: string };
+    let reconciled = false;
+    if (paymentAmount > 0 && alreadyRefunded >= paymentAmount) {
+      // Already fully refunded on Razorpay's side (dashboard refund) —
+      // record the latest refund instead of creating another.
+      const { items } = await razorpay.payments.fetchMultipleRefund(paymentId);
+      const latest = items
+        .filter((r) => r.status !== "failed")
+        .sort((a, b) => Number(b.created_at) - Number(a.created_at))[0];
+      if (!latest) {
+        const message = "Razorpay reports this payment as refunded but lists no successful refund. Check it in the Razorpay dashboard.";
+        const order = await release(message);
+        return res.status(409).json({ success: false, message, order });
+      }
+      refund = { id: latest.id, amount: Number(latest.amount), status: latest.status };
+      reconciled = true;
+    } else if (payment.status !== "captured") {
+      const message = payment.status === "authorized"
+        ? `Payment ${paymentId} is only authorized, not captured — Razorpay releases it back to the customer automatically; nothing to refund.`
+        : `Payment ${paymentId} is "${payment.status}" on Razorpay, so it can't be refunded.`;
+      const order = await release(message);
+      return res.status(400).json({ success: false, message, order });
+    } else {
+      const created = await razorpay.payments.refund(paymentId, { speed: "optimum" });
+      refund = { id: created.id, amount: Number(created.amount || 0), status: created.status };
+    }
+
+    const updated = await Order.findOneAndUpdate(
+      { _id: claimed._id },
+      {
+        $set: {
+          paymentStatus: "Refunded",
+          refund: { id: refund.id, amount: refund.amount / 100, status: refund.status, refundedAt: new Date() },
+        },
+      },
+      { new: true }
+    );
+
+    logAdminAction({
+      actorId: reqUser?.id,
+      actor: reqUser?.name || "admin",
+      action: reconciled ? "order.refund.reconcile" : "order.refund.retry",
+      targetType: "Order",
+      targetId: claimed.orderId,
+      meta: { razorpayPaymentId: paymentId, refundId: refund.id, amount: refund.amount / 100 },
+    });
+
+    // The customer never got the "cancellation approved, refund initiated"
+    // message when the first attempt failed — send it now. Not on a
+    // reconcile: the admin refunded by hand and may have told them already.
+    if (!reconciled && updated && refund.amount > 0) {
+      try {
+        await sendCancellationApproved(updated.shippingAddress.phone, updated.customerName, updated.orderId, (refund.amount / 100).toLocaleString("en-IN"));
+      } catch (err: any) {
+        console.error("Cancellation approved WhatsApp message failed:", err.response?.data || err.message);
+      }
+    }
+
+    const amountLabel = `₹${(refund.amount / 100).toLocaleString("en-IN")}`;
+    res.json({
+      success: true,
+      order: updated,
+      message: reconciled
+        ? `Razorpay shows this payment was already refunded (${amountLabel}) — order marked Refunded.`
+        : `Refund of ${amountLabel} initiated (${refund.id}).`,
+    });
+  } catch (err: any) {
+    const message = razorpayErrorMessage(err);
+    console.error("Razorpay refund retry failed:", err.error || err.message, { orderId: claimed.orderId, paymentId });
+    const order = await release(message).catch(() => null);
+    res.status(502).json({ success: false, message: `Razorpay refused the refund: ${message}`, order });
   }
 };
 
