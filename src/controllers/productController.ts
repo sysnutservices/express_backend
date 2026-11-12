@@ -47,9 +47,19 @@ export const upload = multer({
 });
 
 
+// Out-of-stock laptops are hidden from the storefront automatically: this
+// is the one feed behind the listing, search, home rows, category/SEO pages
+// and the sitemap, so filtering here hides a laptop the moment its stock
+// hits 0 (paid order) and shows it again the moment stock goes back above 0
+// (cancellation restock, admin edit) — no flag to flip, nothing scheduled.
+// The admin panel passes ?includeOutOfStock=1 to see the whole catalogue.
+// Not a secret: stock was already public in this response. The direct
+// product page (getProductBySlug) is deliberately NOT filtered, so shared
+// links and indexed URLs show "Out of Stock" instead of a 404.
 export const getProducts = async (req: Request, res: Response) => {
   try {
-    const products = await Product.find({});
+    const includeOutOfStock = req.query.includeOutOfStock === '1';
+    const products = await Product.find(includeOutOfStock ? {} : { stock: { $gt: 0 } });
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: 'Server Error' });
