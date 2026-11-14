@@ -51,6 +51,9 @@ async function main() {
   const { loadQuoteForCheckout } = await import("./services/quoteService");
   const AmbassadorPayout = (await import("./models/AmbassadorPayout")).default;
   const AmbassadorAdjustment = (await import("./models/AmbassadorAdjustment")).default;
+  // The ₹20,001-₹25,000 slab of the admin template these steps activate —
+  // read from the template so a rate change doesn't break the checks.
+  const TEMPLATE_SLAB_20_25K = (await import("./services/commissionCalc")).ILLUSTRATIVE_REFERRAL_SLABS[1].commissionPaise;
 
   await mongoose.connect(URI);
   await mongoose.connection.dropDatabase();
@@ -276,7 +279,7 @@ async function main() {
     assert.strictEqual(lines.length, 2);
     // coupon ₹680 split pro-rata 22999:45000 → line1 share = floor(68000×2299900/6799900) paise
     assert.strictEqual(lines[0].unitSellingPricePaise, R(22999) - Math.floor((68000 * 2299900) / 6799900));
-    assert.strictEqual(lines[0].commissionPaise, R(500));
+    assert.strictEqual(lines[0].commissionPaise, TEMPLATE_SLAB_20_25K);
     assert.strictEqual(lines[0].hold, null);
     assert.strictEqual(String(lines[0].ruleId), refRuleId);
     assert.strictEqual((lines[0].ruleSnapshot as any).version, 1);
@@ -289,7 +292,7 @@ async function main() {
     await call("PATCH", `/admin/commission-rules/${refRuleId}`, superA, { slabs: [{ minPrice: 0, maxPrice: null, commission: 9999 }] });
     await syncOrderCommissions(order1._id);
     const l = await AmbassadorCommission.findOne({ orderId: order1._id, productId: p1._id }).lean();
-    assert.strictEqual(l!.commissionPaise, R(500));
+    assert.strictEqual(l!.commissionPaise, TEMPLATE_SLAB_20_25K);
     // restore the slab template as v3 for later steps
     const template = (await call("GET", "/admin/commission-rules", finance)).body.template;
     await call("POST", "/admin/commission-rules", superA, template);
