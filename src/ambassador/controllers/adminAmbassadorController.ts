@@ -247,7 +247,7 @@ export const listRules = async (req: Request, res: Response) => {
   const rules = await AmbassadorCommissionRule.find(filter).sort({ status: 1, partnerType: 1, productId: 1, version: -1 }).limit(500).populate("productId", "title brand finalPrice").lean();
   res.json({
     rules: rules.map((r: any) => ({ ...toRuleView({ ...r, productId: r.productId?._id ?? null }), product: r.productId ? { title: r.productId.title, brand: r.productId.brand, finalPrice: r.productId.finalPrice } : null })),
-    template: { kind: "slab", partnerType: "referral", productId: null, slabs: ILLUSTRATIVE_REFERRAL_SLABS.map((s) => ({ minPrice: paiseToRupees(s.minPricePaise), maxPrice: s.maxPricePaise === null ? null : paiseToRupees(s.maxPricePaise), commission: paiseToRupees(s.commissionPaise) })), note: "Illustrative pilot rates from the programme spec — confirm before activating." },
+    template: { kind: "slab", partnerType: "referral", productId: null, slabs: ILLUSTRATIVE_REFERRAL_SLABS.map((s) => ({ minPrice: paiseToRupees(s.minPricePaise), maxPrice: s.maxPricePaise === null ? null : paiseToRupees(s.maxPricePaise), commission: paiseToRupees(s.commissionPaise) })), note: "Founding partner rates advertised on /partner, promised not to go down for a founding partner's first 6 months. Confirm before activating." },
   });
 };
 

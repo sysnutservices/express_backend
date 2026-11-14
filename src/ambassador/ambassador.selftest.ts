@@ -2,7 +2,7 @@
 // Run: npx ts-node src/ambassador/ambassador.selftest.ts (also part of `npm test`).
 import assert from "assert";
 import crypto from "crypto";
-import { allocateSellingPrices, commissionPerUnit, ILLUSTRATIVE_REFERRAL_SLABS, pickRule, validateRuleShape, CommissionRuleLike } from "./services/commissionCalc";
+import { allocateSellingPrices, commissionPerUnit, ILLUSTRATIVE_REFERRAL_SLABS, pickRule, validateRuleShape, CommissionRuleLike, Slab } from "./services/commissionCalc";
 import { clampCapturedAt, decideAttribution, formatPartnerCode, normalizePartnerCode } from "./services/attribution";
 import { decrypt, encrypt, encryptionConfigured, hmac, maskAccount, maskPan, maskUpi } from "./services/crypto";
 import { ageOn, ruleBodyToPaise, validateLeadCreate, validateLeadUpdate, validateRegistration } from "./validation";
@@ -23,7 +23,19 @@ const t = (name: string, fn: () => void) => {
 };
 
 const margin: CommissionRuleLike = { partnerType: "independent", kind: "margin_share", minimumPricePaise: R(24000), baseCommissionPaise: R(300), marginSharePercent: 50 };
-const slab: CommissionRuleLike = { partnerType: "referral", kind: "slab", slabs: ILLUSTRATIVE_REFERRAL_SLABS };
+// The spec's worked-example slab (docs/06), pinned here so these checks test
+// the maths, not whatever rates the admin template currently advertises.
+const SPEC_SLABS: Slab[] = [
+  { minPricePaise: R(15000), maxPricePaise: R(20000), commissionPaise: R(300) },
+  { minPricePaise: R(20000) + 1, maxPricePaise: R(25000), commissionPaise: R(500) },
+  { minPricePaise: R(25000) + 1, maxPricePaise: R(30000), commissionPaise: R(650) },
+  { minPricePaise: R(30000) + 1, maxPricePaise: R(40000), commissionPaise: R(750) },
+];
+const slab: CommissionRuleLike = { partnerType: "referral", kind: "slab", slabs: SPEC_SLABS };
+t("admin template is a valid slab rule at the founding rates", () => {
+  assert.deepStrictEqual(validateRuleShape({ partnerType: "referral", kind: "slab", slabs: ILLUSTRATIVE_REFERRAL_SLABS }), {});
+  assert.deepStrictEqual(ILLUSTRATIVE_REFERRAL_SLABS.map((s) => s.commissionPaise), [R(600), R(1000), R(1300), R(1500)]);
+});
 
 // ---- commission maths (docs/06 §6.4 worked examples) ----
 t("spec example ₹26,000 → ₹1,300", () => assert.deepStrictEqual(commissionPerUnit(margin, R(26000)), { perUnitPaise: R(1300), reason: "margin_share", needsReview: false }));
@@ -37,7 +49,7 @@ t("slab boundary ₹20,000.01 → ₹500", () => assert.strictEqual(commissionPe
 t("slab ₹40,000 → ₹750", () => assert.strictEqual(commissionPerUnit(slab, R(40000)).perUnitPaise, R(750)));
 t("above top slab → 0 + review (admin-defined per spec)", () => assert.deepStrictEqual(commissionPerUnit(slab, R(45000)), { perUnitPaise: 0, reason: "above_slab", needsReview: true }));
 t("open-ended top slab covers high prices", () => {
-  const open: CommissionRuleLike = { ...slab, slabs: [...ILLUSTRATIVE_REFERRAL_SLABS, { minPricePaise: R(40000) + 1, maxPricePaise: null, commissionPaise: R(1000) }] };
+  const open: CommissionRuleLike = { ...slab, slabs: [...SPEC_SLABS, { minPricePaise: R(40000) + 1, maxPricePaise: null, commissionPaise: R(1000) }] };
   assert.strictEqual(commissionPerUnit(open, R(90000)).perUnitPaise, R(1000));
 });
 t("below lowest slab → 0, no review", () => assert.deepStrictEqual(commissionPerUnit(slab, R(12000)), { perUnitPaise: 0, reason: "below_slab", needsReview: false }));
@@ -88,7 +100,7 @@ t("SKU rule beats default; retired/expired ignored", () => {
 t("rule validation", () => {
   assert.deepStrictEqual(validateRuleShape(slab), {});
   assert.deepStrictEqual(validateRuleShape(margin), {});
-  assert.ok(validateRuleShape({ ...slab, slabs: [ILLUSTRATIVE_REFERRAL_SLABS[1], ILLUSTRATIVE_REFERRAL_SLABS[0]] }).slabs);
+  assert.ok(validateRuleShape({ ...slab, slabs: [SPEC_SLABS[1], SPEC_SLABS[0]] }).slabs);
   assert.ok(validateRuleShape({ ...slab, slabs: [{ minPricePaise: 0, maxPricePaise: null, commissionPaise: 1 }, { minPricePaise: 5, maxPricePaise: null, commissionPaise: 1 }] }).slabs);
   assert.ok(validateRuleShape({ ...margin, marginSharePercent: 101 }).marginSharePercent);
   assert.ok(validateRuleShape({ ...margin, minimumPricePaise: 1.5 }).minimumPricePaise);

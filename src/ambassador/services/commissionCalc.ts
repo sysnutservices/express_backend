@@ -155,11 +155,14 @@ export function validateRuleShape(rule: Partial<CommissionRuleLike>): Record<str
   return errors;
 }
 
-// The spec's illustrative referral slab (₹15,000-₹40,000). Offered to the
-// admin as a starting template only — never auto-activated (decision D6).
+// The founding-partner referral slab (₹15,000-₹40,000) advertised on the
+// /partner landing page — doubled from the spec's ₹300-₹750 on 2026-11-14.
+// Must match the frontend's lib/illustrativeCommission.ts. Offered to the
+// admin as a starting template only — never auto-activated (decision D6);
+// the page promises founding partners these rates won't go down for 6 months.
 export const ILLUSTRATIVE_REFERRAL_SLABS: Slab[] = [
-  { minPricePaise: 1_500_000, maxPricePaise: 2_000_000, commissionPaise: 30_000 },
-  { minPricePaise: 2_000_001, maxPricePaise: 2_500_000, commissionPaise: 50_000 },
-  { minPricePaise: 2_500_001, maxPricePaise: 3_000_000, commissionPaise: 65_000 },
-  { minPricePaise: 3_000_001, maxPricePaise: 4_000_000, commissionPaise: 75_000 },
+  { minPricePaise: 1_500_000, maxPricePaise: 2_000_000, commissionPaise: 60_000 },
+  { minPricePaise: 2_000_001, maxPricePaise: 2_500_000, commissionPaise: 100_000 },
+  { minPricePaise: 2_500_001, maxPricePaise: 3_000_000, commissionPaise: 130_000 },
+  { minPricePaise: 3_000_001, maxPricePaise: 4_000_000, commissionPaise: 150_000 },
 ];
