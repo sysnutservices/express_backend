@@ -254,7 +254,9 @@ t("lead update cannot set won", () => {
 // ---- add-ons at face value (D13) ----
 t("add-on raises the margin floor: ₹26,000 + ₹4,000 SSD → still ₹1,300", () => assert.strictEqual(commissionPerUnit(margin, R(30000), R(4000)).perUnitPaise, R(1300)));
 t("discount hidden in an add-on is below floor", () => assert.strictEqual(commissionPerUnit(margin, R(27000), R(4000)).reason, "below_floor"));
-t("slab ignores add-on split", () => assert.strictEqual(commissionPerUnit(slab, R(22999), R(4000)).perUnitPaise, R(500)));
+t("slab picked without add-ons: ₹18,999 + ₹4,000 RAM → ₹300 slab, not ₹500", () => assert.strictEqual(commissionPerUnit(slab, R(22999), R(4000)).perUnitPaise, R(300)));
+t("upgrade can't push a slab sale above the top slab into review", () => assert.deepStrictEqual(commissionPerUnit(slab, R(41000), R(3000)), { perUnitPaise: R(750), reason: "slab", needsReview: false }));
+t("same laptop, with or without upgrade → same slab commission", () => assert.strictEqual(commissionPerUnit(slab, R(19500)).perUnitPaise, commissionPerUnit(slab, R(21500), R(2000)).perUnitPaise));
 
 // ---- quotation pricing levels (docs/01 pricing authority) ----
 const line = (quoted: number, over: any = {}) => priceQuoteLine({ listedUnitPaise: R(28000), configCostPaise: 0, quotedUnitPaise: R(quoted), quantity: 1, rule: margin, ...over });

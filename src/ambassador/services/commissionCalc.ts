@@ -32,16 +32,19 @@ export interface UnitCommission {
 }
 
 // addOnPaise = RAM/SSD/warranty upgrade cost included in the unit price.
-// Add-ons are sold at face value: for margin_share they raise the floor by
-// the same amount, so no margin share is paid on an upgrade and a discount
-// can't be hidden inside one (docs/06 §6.4, decision D13). Slabs look at the
-// full unit price, as before.
+// Add-ons are sold at face value and never change commission (docs/06 §6.4,
+// decision D13):
+// - margin_share: they raise the floor by the same amount, so no margin
+//   share is paid on an upgrade and a discount can't be hidden inside one.
+// - slab: the slab is picked from the price WITHOUT add-ons, so an upgrade
+//   can't lift a sale into a higher slab (or past the top one into review).
 export function commissionPerUnit(rule: CommissionRuleLike | null | undefined, unitSellingPricePaise: number, addOnPaise = 0): UnitCommission {
   if (!rule) return { perUnitPaise: 0, reason: "no_rule", needsReview: true };
 
   if (rule.kind === "slab") {
+    const slabPricePaise = Math.max(0, unitSellingPricePaise - Math.max(0, addOnPaise || 0));
     const slab = (rule.slabs || []).find(
-      (s) => unitSellingPricePaise >= s.minPricePaise && (s.maxPricePaise === null || s.maxPricePaise === undefined || unitSellingPricePaise <= s.maxPricePaise)
+      (s) => slabPricePaise >= s.minPricePaise && (s.maxPricePaise === null || s.maxPricePaise === undefined || slabPricePaise <= s.maxPricePaise)
     );
     if (!slab) {
       // Above every bounded slab = "admin-defined" territory in the spec
@@ -49,7 +52,7 @@ export function commissionPerUnit(rule: CommissionRuleLike | null | undefined, u
       const slabs = rule.slabs || [];
       const top = slabs.reduce<number | null>((m, s) => (s.maxPricePaise === null || s.maxPricePaise === undefined ? m : Math.max(m ?? 0, s.maxPricePaise)), null);
       const openEnded = slabs.some((s) => s.maxPricePaise === null || s.maxPricePaise === undefined);
-      if (!openEnded && top !== null && unitSellingPricePaise > top) return { perUnitPaise: 0, reason: "above_slab", needsReview: true };
+      if (!openEnded && top !== null && slabPricePaise > top) return { perUnitPaise: 0, reason: "above_slab", needsReview: true };
       return { perUnitPaise: 0, reason: "below_slab", needsReview: false };
     }
     return { perUnitPaise: slab.commissionPaise, reason: "slab", needsReview: false };
