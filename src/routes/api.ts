@@ -21,6 +21,7 @@ import { getProductReviews, createReview, deleteReview, getFeaturedReviews } fro
 import { createContactMessage, getContactMessages, updateContactMessageStatus } from '../controllers/contactController';
 import { saveExtraOffer, removeExtraOffer } from '../controllers/extraOfferController';
 import ambassadorRoutes from '../ambassador/routes';
+import dealerRoutes from '../dealer/routes';
 // import { deleteImage, galleryUpload, getImages, uploadMultipleImages, uploadSingleImage } from '../controllers/uploadController';
 
 const router = express.Router();
@@ -229,4 +230,6 @@ router.get("/public", getAllBlogs);
 
 // Sales Ambassador Network (/partners/*, /admin/partners/*, /admin/commission-rules, ...)
 router.use(ambassadorRoutes);
+// Dealer channel (/dealers/*, /admin/dealers/*, /admin/dealer-*)
+router.use(dealerRoutes);
 export default router;
