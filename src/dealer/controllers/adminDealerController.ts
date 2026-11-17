@@ -49,7 +49,7 @@ export const listEnquiries = async (req: Request, res: Response) => {
     filter.$or = [{ businessName: rx }, { contactName: rx }, { phone: rx }, { city: rx }];
   }
   const enquiries = await DealerEnquiry.find(filter).sort({ createdAt: -1 }).limit(500).lean();
-  res.json({ enquiries: enquiries.map(dealerEnquiryView) });
+  res.json({ enquiries: enquiries.map((x) => dealerEnquiryView(x, { decryptGstin: decrypt })) });
 };
 
 export const setEnquiryStatus = async (req: Request, res: Response) => {
@@ -61,7 +61,7 @@ export const setEnquiryStatus = async (req: Request, res: Response) => {
   const e = await DealerEnquiry.findByIdAndUpdate(req.params.id, { $set: { status, statusAt: new Date(), statusBy: me(req)._id } }, { new: true }).lean();
   if (!e) return res.status(404).json({ message: "Enquiry not found" });
   await audit({ actor: me(req), action: "dealer.enquiry.status", targetType: "DealerEnquiry", targetId: String(e._id), before: { status: before.status }, after: { status } });
-  res.json({ enquiry: dealerEnquiryView(e) });
+  res.json({ enquiry: dealerEnquiryView(e, { decryptGstin: decrypt }) });
 };
 
 // ---- Dealers ----

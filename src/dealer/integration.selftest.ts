@@ -356,6 +356,14 @@ async function main() {
     assert.strictEqual(stored.city, "Hubballi"); // details updated
     assert.strictEqual(stored.source.utmSource, "instagram"); // first source kept
     assert.strictEqual(await DealerEnquiry.countDocuments({}), 1);
+    assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ gstin: "12345" }))).status, 400);
+    assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ gstin: "29abcde1234f1z5" }))).status, 200);
+    const withGst: any = await DealerEnquiry.findOne({ phone: "9845000001" }).lean();
+    assert.ok(withGst.gstin.encrypted.startsWith("v1:") && !withGst.gstin.encrypted.includes("ABCDE"));
+    assert.strictEqual(withGst.gstin.last4, "F1Z5");
+    // a later submission without a GSTIN keeps the one already given
+    await call("POST", "/dealers/enquiries", undefined, enq({ city: "Hubballi" }));
+    assert.ok(((await DealerEnquiry.findOne({ phone: "9845000001" }).lean()) as any).gstin?.encrypted);
     // u1 has a dealer profile with mobile 9400000001
     assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ phone: "9400000001" }))).status, 409);
     assert.strictEqual((await call("GET", "/admin/dealer-enquiries", u1)).status, 403);
@@ -363,6 +371,7 @@ async function main() {
     const list = await call("GET", "/admin/dealer-enquiries?status=new", sales);
     assert.strictEqual(list.body.enquiries.length, 1);
     const id = list.body.enquiries[0].id;
+    assert.strictEqual(list.body.enquiries[0].gstin, "29ABCDE1234F1Z5"); // full GSTIN for staff
     assert.strictEqual((await call("PATCH", `/admin/dealer-enquiries/${id}/status`, sales, { status: "maybe" })).status, 400);
     const st = await call("PATCH", `/admin/dealer-enquiries/${id}/status`, sales, { status: "contacted" });
     assert.strictEqual(st.body.enquiry.status, "contacted");

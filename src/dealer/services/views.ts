@@ -30,7 +30,17 @@ export function adminDealerView(p: any) {
   };
 }
 
-export function dealerEnquiryView(e: any) {
+// Admin-only (super admin, sales admin). An enquiry's GSTIN is shown in full
+// so staff can look it up before calling; it's encrypted at rest.
+export function dealerEnquiryView(e: any, opts: { decryptGstin?: (s: string) => string } = {}) {
+  let gstin: string | null = null;
+  if (e.gstin?.encrypted && opts.decryptGstin) {
+    try {
+      gstin = opts.decryptGstin(e.gstin.encrypted);
+    } catch {
+      gstin = e.gstin.last4 ? "XXXXXXXXXXX" + e.gstin.last4 : null;
+    }
+  }
   return {
     id: String(e._id),
     phone: e.phone,
@@ -40,6 +50,7 @@ export function dealerEnquiryView(e: any) {
     businessType: e.businessType,
     monthlyVolume: e.monthlyVolume,
     message: e.message || "",
+    gstin,
     source: e.source || {},
     status: e.status,
     statusAt: e.statusAt || null,

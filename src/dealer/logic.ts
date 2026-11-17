@@ -122,6 +122,7 @@ export interface DealerEnquiryInput {
   businessType: DealerBusinessType;
   monthlyVolume: DealerMonthlyVolume;
   message?: string;
+  gstin?: string; // optional; format-checked only, not verified with the GST portal
 }
 
 export function validateDealerEnquiry(b: any): Result<DealerEnquiryInput> {
@@ -137,9 +138,11 @@ export function validateDealerEnquiry(b: any): Result<DealerEnquiryInput> {
   if (!city) e.city = "City is required";
   if (!businessType) e.businessType = "Choose your type of business";
   if (!monthlyVolume) e.monthlyVolume = "Choose how many laptops you expect to buy a month";
+  const gstin = typeof b.gstin === "string" ? b.gstin.toUpperCase().replace(/\s/g, "").slice(0, 20) || undefined : undefined;
+  if (gstin && !GSTIN_RE.test(gstin)) e.gstin = "Enter a valid 15-character GSTIN, or leave it blank";
   if (b.consent !== true) e.consent = "Please agree to be contacted about buying as a dealer";
   if (Object.keys(e).length) return { ok: false, errors: e };
-  return { ok: true, value: { businessName: businessName!, contactName: contactName!, city: city!, businessType: businessType!, monthlyVolume: monthlyVolume!, message: str(b.message, 500) } };
+  return { ok: true, value: { businessName: businessName!, contactName: contactName!, city: city!, businessType: businessType!, monthlyVolume: monthlyVolume!, message: str(b.message, 500), gstin } };
 }
 
 // ---- Pricing an order (server-side only; the client sends ids and quantities) ----
