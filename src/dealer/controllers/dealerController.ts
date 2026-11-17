@@ -113,6 +113,14 @@ export const createEnquiry = async (req: Request, res: Response) => {
   }
   const clip = (x: unknown, n = 80) => (typeof x === "string" && x.trim() ? x.trim().slice(0, n) : undefined);
   const now = new Date();
+  const { gstin, ...fields } = v.value;
+  // GSTIN is optional: if the encryption keys are missing, keep the rest of
+  // the enquiry rather than refuse it, and never store the GSTIN in plain text.
+  let gstinField: { encrypted: string; last4: string } | undefined;
+  if (gstin) {
+    if (encryptionConfigured()) gstinField = { encrypted: encrypt(gstin), last4: gstin.slice(-4) };
+    else console.error("[dealer] encryption not configured, enquiry GSTIN dropped");
+  }
   const r = await DealerEnquiry.updateOne(
     { phone },
     {
@@ -121,7 +129,11 @@ export const createEnquiry = async (req: Request, res: Response) => {
         status: "new",
         source: { utmSource: clip(b.utmSource), utmMedium: clip(b.utmMedium), utmCampaign: clip(b.utmCampaign), referrer: clip(b.referrer, 200) },
       },
-      $set: { ...Object.fromEntries(Object.entries(v.value).filter(([, x]) => x !== undefined)), consent: { given: true, at: now } },
+      $set: {
+        ...Object.fromEntries(Object.entries(fields).filter(([, x]) => x !== undefined)),
+        ...(gstinField ? { gstin: gstinField } : {}),
+        consent: { given: true, at: now },
+      },
     },
     { upsert: true }
   );

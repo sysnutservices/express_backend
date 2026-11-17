@@ -74,6 +74,14 @@ check("enquiry: valid, message optional and clipped", () => {
   const long = validateDealerEnquiry({ ...enq, message: "x".repeat(900) });
   assert.ok(long.ok && long.value.message!.length === 500);
 });
+check("enquiry: GSTIN optional, normalised, format-checked", () => {
+  const blank = validateDealerEnquiry({ ...enq, gstin: "  " });
+  assert.ok(blank.ok && blank.value.gstin === undefined);
+  const ok = validateDealerEnquiry({ ...enq, gstin: "29abcde1234f1z5 " });
+  assert.ok(ok.ok && ok.value.gstin === "29ABCDE1234F1Z5");
+  const bad = validateDealerEnquiry({ ...enq, gstin: "29ABCDE1234F" });
+  assert.ok(!bad.ok && bad.errors.gstin);
+});
 check("enquiry: needs consent, city, known business type and volume", () => {
   const r = validateDealerEnquiry({ ...enq, consent: "yes", city: " ", businessType: "x", monthlyVolume: 10 });
   assert.ok(!r.ok && r.errors.consent && r.errors.city && r.errors.businessType && r.errors.monthlyVolume);
