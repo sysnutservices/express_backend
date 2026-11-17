@@ -4,8 +4,9 @@ import User from '../models/User';
 import Order from '../models/Order';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import crypto from 'crypto';
 import { sendOtp, getContactName } from '../services/wa';
+import OtpCode from '../models/OtpCode';
+import { generateOtp, hashOtp, otpSecret, resendWaitMs, OTP_MAX_ATTEMPTS, OTP_TTL_MS } from '../utils/otp';
 import { logAdminAction } from '../models/AuditLog';
 
 // expiresIn defaults to the customer session length so customerLogin's call
@@ -27,25 +28,52 @@ const generateToken = (
   );
 };
 
-const otpStore = new Map<string, { otp: string; expiresAt: Date }>();
-
+// Pending OTPs live in the OtpCode collection (hashed, with expiry, an
+// attempt cap and a resend cooldown); see utils/otp.ts. They used to be kept
+// in plain text in an in-memory Map, which also lost every pending code
+// whenever the server restarted.
 export const sendOTP = async (req: Request, res: Response) => {
   const { mobile } = req.body;
 
-  if (!mobile || !/^\d{10}$/.test(mobile)) {
+  if (typeof mobile !== 'string' || !/^\d{10}$/.test(mobile)) {
     return res.status(400).json({ message: 'Invalid mobile number' });
   }
 
-  // Generate 6-digit OTP
-  const otp = crypto.randomInt(100000, 999999).toString();
+  // Per-number cooldown, on top of the per-IP otpSendLimiter, so one number
+  // can't be flooded from many IPs.
+  const existing = await OtpCode.findOne({ mobile }).select('lastSentAt').lean();
+  const waitMs = resendWaitMs(existing?.lastSentAt);
+  if (waitMs > 0) {
+    const seconds = Math.ceil(waitMs / 1000);
+    res.set('Retry-After', String(seconds));
+    return res.status(429).json({ message: `Please wait ${seconds} seconds before requesting another OTP.` });
+  }
 
-  // Store OTP with 5-minute expiry
-  otpStore.set(mobile, {
-    otp,
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000)
-  });
+  const otp = generateOtp();
+  const now = new Date();
 
-  await sendOtp(mobile, otp);
+  // A new code replaces any earlier one for this number and resets the
+  // attempt counter.
+  await OtpCode.findOneAndUpdate(
+    { mobile },
+    {
+      $set: {
+        codeHash: hashOtp(mobile, otp, otpSecret()),
+        expiresAt: new Date(now.getTime() + OTP_TTL_MS),
+        attempts: 0,
+        lastSentAt: now,
+      },
+    },
+    { upsert: true }
+  );
+
+  try {
+    await sendOtp(mobile, otp);
+  } catch (err) {
+    // Nothing was delivered, so don't leave a code (or a cooldown) behind.
+    await OtpCode.deleteOne({ mobile }).catch(() => undefined);
+    throw err;
+  }
 
   res.json({
     message: 'OTP sent successfully',
@@ -63,25 +91,38 @@ export const customerLogin = async (req: Request, res: Response) => {
     return res.status(400).json({ message: 'Mobile and OTP are required' });
   }
 
-  // Check if OTP exists
-  const otpData = otpStore.get(mobile);
-  if (!otpData) {
-    return res.status(400).json({ message: 'OTP not found or expired' });
-  }
+  // Consume the code atomically: a matching, unexpired code with attempts
+  // left is deleted in the same operation, so it can only be used once even
+  // if two requests race.
+  const now = new Date();
+  const consumed = await OtpCode.findOneAndDelete({
+    mobile,
+    codeHash: hashOtp(mobile, otp, otpSecret()),
+    expiresAt: { $gt: now },
+    attempts: { $lt: OTP_MAX_ATTEMPTS },
+  });
 
-  // Check if OTP is expired
-  if (new Date() > otpData.expiresAt) {
-    otpStore.delete(mobile);
-    return res.status(400).json({ message: 'OTP expired' });
-  }
-
-  // Verify OTP
-  if (otpData.otp !== otp) {
+  if (!consumed) {
+    // Wrong, expired or used up. Count the attempt against the pending code.
+    const pending = await OtpCode.findOneAndUpdate(
+      { mobile },
+      { $inc: { attempts: 1 } },
+      { new: true }
+    );
+    if (!pending) {
+      return res.status(400).json({ message: 'OTP not found or expired' });
+    }
+    if (pending.expiresAt <= now) {
+      await OtpCode.deleteOne({ _id: pending._id });
+      return res.status(400).json({ message: 'OTP expired' });
+    }
+    if (pending.attempts >= OTP_MAX_ATTEMPTS) {
+      // Kept (not deleted) until it expires or is replaced, so the resend
+      // cooldown still applies; it can no longer be consumed above.
+      return res.status(400).json({ message: 'Too many wrong attempts. Please request a new OTP.' });
+    }
     return res.status(400).json({ message: 'Invalid OTP' });
   }
-
-  // OTP is valid, delete it
-  otpStore.delete(mobile);
 
   // Check if user exists
   let user = await User.findOne({ mobile });
