@@ -8,6 +8,7 @@ import { encrypt, encryptionConfigured, hmac } from "../../ambassador/services/c
 import { normalizePhone, rupeesToPaise } from "../../ambassador/money";
 import { audit } from "../../ambassador/services/audit";
 import DealerProfile from "../models/DealerProfile";
+import DealerEnquiry from "../models/DealerEnquiry";
 import DealerPrice from "../models/DealerPrice";
 import DealerOrder from "../models/DealerOrder";
 import DealerUnit from "../models/DealerUnit";
@@ -22,6 +23,7 @@ import {
   isPaymentMethod,
   priceDealerOrder,
   validateClaim,
+  validateDealerEnquiry,
   validateDealerRegistration,
   validateFulfilment,
 } from "../logic";
@@ -81,6 +83,7 @@ export const register = async (req: Request, res: Response) => {
       phone,
       email: input.email,
       address: input.address,
+      vetting: input.vetting,
       ...(input.gstin ? { gstin: { encrypted: encrypt(input.gstin), last4: input.gstin.slice(-4) }, gstinHash } : {}),
       ...(input.pan ? { pan: { encrypted: encrypt(input.pan), last4: input.pan.slice(-4) }, panHash } : {}),
       agreement: { version: input.agreementVersion, acceptedAt: now, ip: req.ip, noWarrantyAcknowledged: true },
@@ -92,6 +95,37 @@ export const register = async (req: Request, res: Response) => {
     if (err?.code === 11000) return res.status(409).json({ message: "These details are already registered with another dealer account" });
     throw err;
   }
+};
+
+// POST /dealers/enquiries (public, rate-limited per IP): interest from the
+// /dealers landing page while registration is closed. Upsert by mobile so a
+// repeat submission updates the details instead of adding a duplicate; the
+// first campaign source is kept.
+export const createEnquiry = async (req: Request, res: Response) => {
+  const b = req.body || {};
+  const phone = normalizePhone(b.phone);
+  const v = validateDealerEnquiry(b);
+  const errors = v.ok ? {} : { ...v.errors };
+  if (!phone) (errors as Record<string, string>).phone = "Enter a valid 10-digit mobile number";
+  if (!v.ok || !phone) return res.status(400).json({ message: "Please correct the highlighted fields", errors });
+  if (await DealerProfile.exists({ phone })) {
+    return res.status(409).json({ message: "This number has already applied as a dealer. Sign in at lapshark.com/dealer to see your application.", code: "ALREADY_REGISTERED" });
+  }
+  const clip = (x: unknown, n = 80) => (typeof x === "string" && x.trim() ? x.trim().slice(0, n) : undefined);
+  const now = new Date();
+  const r = await DealerEnquiry.updateOne(
+    { phone },
+    {
+      $setOnInsert: {
+        phone,
+        status: "new",
+        source: { utmSource: clip(b.utmSource), utmMedium: clip(b.utmMedium), utmCampaign: clip(b.utmCampaign), referrer: clip(b.referrer, 200) },
+      },
+      $set: { ...Object.fromEntries(Object.entries(v.value).filter(([, x]) => x !== undefined)), consent: { given: true, at: now } },
+    },
+    { upsert: true }
+  );
+  res.status(r.upsertedCount ? 201 : 200).json({ ok: true, alreadyEnquired: !r.upsertedCount });
 };
 
 // Products a dealer can buy: an active dealer price and stock > 0.

@@ -48,6 +48,36 @@ function validateAddress(a: any, e: Record<string, string>, prefix = "address"):
   return { line1, line2, city, state, pincode };
 }
 
+// ---- Vetting answers (application and enquiry) ----
+// Shown to the admin reviewing an application; the frontend mirrors these
+// codes and labels in lib/dealerApi.ts.
+export const DEALER_BUSINESS_TYPES = ["retail_shop", "online_seller", "it_reseller", "refurbisher", "other"] as const;
+export const DEALER_YEARS_IN_BUSINESS = ["lt1", "1to3", "3to5", "5plus"] as const;
+export const DEALER_MONTHLY_VOLUMES = ["1to5", "6to20", "21to50", "50plus"] as const;
+export type DealerBusinessType = (typeof DEALER_BUSINESS_TYPES)[number];
+export type DealerYearsInBusiness = (typeof DEALER_YEARS_IN_BUSINESS)[number];
+export type DealerMonthlyVolume = (typeof DEALER_MONTHLY_VOLUMES)[number];
+
+const oneOf = <T extends string>(v: unknown, list: readonly T[]): T | undefined => (typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : undefined);
+
+export interface DealerVetting {
+  businessType: DealerBusinessType;
+  yearsInBusiness: DealerYearsInBusiness;
+  monthlyVolume: DealerMonthlyVolume;
+  interests?: string;
+}
+
+function validateVetting(b: any, e: Record<string, string>): DealerVetting | undefined {
+  const businessType = oneOf(b.businessType, DEALER_BUSINESS_TYPES);
+  const yearsInBusiness = oneOf(b.yearsInBusiness, DEALER_YEARS_IN_BUSINESS);
+  const monthlyVolume = oneOf(b.monthlyVolume, DEALER_MONTHLY_VOLUMES);
+  if (!businessType) e.businessType = "Choose your type of business";
+  if (!yearsInBusiness) e.yearsInBusiness = "Choose how long you've been in business";
+  if (!monthlyVolume) e.monthlyVolume = "Choose how many laptops you expect to buy a month";
+  if (!businessType || !yearsInBusiness || !monthlyVolume) return undefined;
+  return { businessType, yearsInBusiness, monthlyVolume, interests: str(b.interests, 300) };
+}
+
 // ---- Registration ----
 export interface DealerRegistrationInput {
   businessName: string;
@@ -56,6 +86,7 @@ export interface DealerRegistrationInput {
   gstin?: string;
   pan?: string;
   address: Address;
+  vetting: DealerVetting;
   agreementVersion: string;
 }
 
@@ -74,10 +105,41 @@ export function validateDealerRegistration(b: any, opts: { agreementVersion: str
   if (pan && !PAN_RE.test(pan)) e.pan = "Enter a valid PAN (e.g. ABCDE1234F)";
   if (!gstin && !pan) e.gstin = "Enter your GSTIN or your PAN";
   const address = validateAddress(b.address, e);
+  const vetting = validateVetting(b, e);
   if (b.agreementVersion !== opts.agreementVersion) e.agreement = "Please accept the current dealer terms";
   if (b.noWarrantyAcknowledged !== true) e.noWarrantyAcknowledged = "Please confirm you understand laptops come without Lapshark warranty unless you add it";
   if (Object.keys(e).length) return { ok: false, errors: e };
-  return { ok: true, value: { businessName: businessName!, contactName: contactName!, email, gstin, pan, address: address!, agreementVersion: opts.agreementVersion } };
+  return { ok: true, value: { businessName: businessName!, contactName: contactName!, email, gstin, pan, address: address!, vetting: vetting!, agreementVersion: opts.agreementVersion } };
+}
+
+// ---- Enquiry (public, no login, while registration is closed) ----
+// Contact details for a call back, nothing sensitive: no GSTIN/PAN, no
+// address. The phone is not OTP-verified, same as the ambassador waitlist.
+export interface DealerEnquiryInput {
+  businessName: string;
+  contactName: string;
+  city: string;
+  businessType: DealerBusinessType;
+  monthlyVolume: DealerMonthlyVolume;
+  message?: string;
+}
+
+export function validateDealerEnquiry(b: any): Result<DealerEnquiryInput> {
+  const e: Record<string, string> = {};
+  b = b && typeof b === "object" ? b : {};
+  const businessName = str(b.businessName, 120);
+  const contactName = str(b.contactName, 120);
+  const city = str(b.city, 80);
+  const businessType = oneOf(b.businessType, DEALER_BUSINESS_TYPES);
+  const monthlyVolume = oneOf(b.monthlyVolume, DEALER_MONTHLY_VOLUMES);
+  if (!businessName || businessName.length < 2) e.businessName = "Business name is required";
+  if (!contactName || contactName.length < 2) e.contactName = "Your name is required";
+  if (!city) e.city = "City is required";
+  if (!businessType) e.businessType = "Choose your type of business";
+  if (!monthlyVolume) e.monthlyVolume = "Choose how many laptops you expect to buy a month";
+  if (b.consent !== true) e.consent = "Please agree to be contacted about buying as a dealer";
+  if (Object.keys(e).length) return { ok: false, errors: e };
+  return { ok: true, value: { businessName: businessName!, contactName: contactName!, city: city!, businessType: businessType!, monthlyVolume: monthlyVolume!, message: str(b.message, 500) } };
 }
 
 // ---- Pricing an order (server-side only; the client sends ids and quantities) ----

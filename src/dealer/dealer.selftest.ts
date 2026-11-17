@@ -11,6 +11,7 @@ import {
   normalizeDealerSerial,
   priceDealerOrder,
   validateClaim,
+  validateDealerEnquiry,
   validateDealerRegistration,
   validateFulfilment,
   validatePayment,
@@ -26,7 +27,8 @@ const check = (name: string, fn: () => void) => {
 };
 
 const addr = { line1: "12 SP Road", city: "Bengaluru", state: "Karnataka", pincode: "560002" };
-const reg = { businessName: "Laptop Point", contactName: "Ravi", gstin: "29ABCDE1234F1Z5", address: addr, agreementVersion: "v1", noWarrantyAcknowledged: true };
+const vet = { businessType: "retail_shop", yearsInBusiness: "3to5", monthlyVolume: "6to20", interests: "Dell Latitude, ThinkPad" };
+const reg = { businessName: "Laptop Point", contactName: "Ravi", gstin: "29ABCDE1234F1Z5", address: addr, ...vet, agreementVersion: "v1", noWarrantyAcknowledged: true };
 
 check("registration: valid with GSTIN only", () => {
   const r = validateDealerRegistration(reg, { agreementVersion: "v1" });
@@ -52,6 +54,30 @@ check("registration: needs current agreement and no-warranty acknowledgement", (
 check("registration: bad pincode", () => {
   const r = validateDealerRegistration({ ...reg, address: { ...addr, pincode: "012345" } }, { agreementVersion: "v1" });
   assert.ok(!r.ok && r.errors["address.pincode"]);
+});
+check("registration: vetting answers kept", () => {
+  const r = validateDealerRegistration(reg, { agreementVersion: "v1" });
+  assert.ok(r.ok);
+  if (r.ok) assert.deepStrictEqual(r.value.vetting, vet);
+});
+check("registration: vetting answers required and must be known codes", () => {
+  const r = validateDealerRegistration({ ...reg, businessType: "wholesaler", yearsInBusiness: undefined, monthlyVolume: "" }, { agreementVersion: "v1" });
+  assert.ok(!r.ok && r.errors.businessType && r.errors.yearsInBusiness && r.errors.monthlyVolume);
+  const ok = validateDealerRegistration({ ...reg, interests: "" }, { agreementVersion: "v1" });
+  assert.ok(ok.ok && ok.value.vetting.interests === undefined); // interests optional
+});
+
+const enq = { businessName: "Laptop Point", contactName: "Ravi", city: "Bengaluru", businessType: "online_seller", monthlyVolume: "1to5", consent: true };
+check("enquiry: valid, message optional and clipped", () => {
+  const r = validateDealerEnquiry(enq);
+  assert.ok(r.ok && r.value.message === undefined);
+  const long = validateDealerEnquiry({ ...enq, message: "x".repeat(900) });
+  assert.ok(long.ok && long.value.message!.length === 500);
+});
+check("enquiry: needs consent, city, known business type and volume", () => {
+  const r = validateDealerEnquiry({ ...enq, consent: "yes", city: " ", businessType: "x", monthlyVolume: 10 });
+  assert.ok(!r.ok && r.errors.consent && r.errors.city && r.errors.businessType && r.errors.monthlyVolume);
+  assert.ok(!validateDealerEnquiry(null).ok);
 });
 
 const cat = new Map<string, CatalogueEntry>([

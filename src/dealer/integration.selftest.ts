@@ -30,6 +30,7 @@ async function main() {
   const AuditLog = (await import("../models/AuditLog")).default;
   const AmbassadorCommission = (await import("../ambassador/models/AmbassadorCommission")).default;
   const DealerProfile = (await import("./models/DealerProfile")).default;
+  const DealerEnquiry = (await import("./models/DealerEnquiry")).default;
   const DealerOrder = (await import("./models/DealerOrder")).default;
   const DealerUnit = (await import("./models/DealerUnit")).default;
   const routes = (await import("./routes")).default;
@@ -96,7 +97,7 @@ async function main() {
   await mongoose.connection.collection("ambassadorprofiles").insertOne({ userId: u3._id, partnerCode: "LSA-000777", status: "active" });
 
   const addr = { line1: "12 SP Road", city: "Bengaluru", state: "Karnataka", pincode: "560002" };
-  const reg = (over: any = {}) => ({ businessName: "Laptop Point", contactName: "Ravi", gstin: "29ABCDE1234F1Z5", address: addr, agreementVersion: "2026-11-dealer-draft", noWarrantyAcknowledged: true, ...over });
+  const reg = (over: any = {}) => ({ businessName: "Laptop Point", contactName: "Ravi", gstin: "29ABCDE1234F1Z5", address: addr, businessType: "retail_shop", yearsInBusiness: "1to3", monthlyVolume: "6to20", agreementVersion: "2026-11-dealer-draft", noWarrantyAcknowledged: true, ...over });
   let D1: any, D2: any, O1: any;
 
   console.log("dealer integration:");
@@ -126,6 +127,8 @@ async function main() {
     assert.ok(!JSON.stringify(r1.body).includes("29ABCDE1234F1Z5"));
     D1 = r1.body.profile;
     const raw: any = await DealerProfile.findById(D1.id).lean();
+    assert.deepStrictEqual(raw.vetting, { businessType: "retail_shop", yearsInBusiness: "1to3", monthlyVolume: "6to20" });
+    assert.strictEqual((await call("GET", `/admin/dealers/${D1.id}`, sales)).body.dealer.vetting.monthlyVolume, "6to20");
     assert.ok(raw.gstin.encrypted.startsWith("v1:") && !raw.gstin.encrypted.includes("ABCDE"));
     assert.strictEqual((await call("POST", "/dealers/register", u2, reg())).status, 409); // same GSTIN
     assert.strictEqual((await call("POST", "/dealers/register", u1, reg({ gstin: "29AAAAA1111A1Z5" }))).status, 409); // already applied
@@ -338,6 +341,33 @@ async function main() {
     assert.strictEqual((await call("GET", "/dealers/catalogue", u2)).status, 403);
     assert.strictEqual((await call("PATCH", `/admin/dealers/${D2.id}/reactivate`, sales)).status, 403);
     assert.strictEqual((await call("PATCH", `/admin/dealers/${D2.id}/reactivate`, superA)).status, 200);
+  });
+
+  await step("enquiries: public, upsert by mobile, refused for applied numbers, admin-only list and status", async () => {
+    const enq = (over: any = {}) => ({ businessName: "Shop One", contactName: "Asha", phone: "+91 98450 00001", city: "Mysuru", businessType: "retail_shop", monthlyVolume: "1to5", consent: true, utmSource: "instagram", ...over });
+    assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ consent: false }))).status, 400);
+    assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ phone: "12345" }))).status, 400);
+    const e1 = await call("POST", "/dealers/enquiries", undefined, enq());
+    assert.strictEqual(e1.status, 201, JSON.stringify(e1.body));
+    const e2 = await call("POST", "/dealers/enquiries", undefined, enq({ city: "Hubballi", utmSource: "google" }));
+    assert.strictEqual(e2.status, 200);
+    assert.strictEqual(e2.body.alreadyEnquired, true);
+    const stored: any = await DealerEnquiry.findOne({ phone: "9845000001" }).lean();
+    assert.strictEqual(stored.city, "Hubballi"); // details updated
+    assert.strictEqual(stored.source.utmSource, "instagram"); // first source kept
+    assert.strictEqual(await DealerEnquiry.countDocuments({}), 1);
+    // u1 has a dealer profile with mobile 9400000001
+    assert.strictEqual((await call("POST", "/dealers/enquiries", undefined, enq({ phone: "9400000001" }))).status, 409);
+    assert.strictEqual((await call("GET", "/admin/dealer-enquiries", u1)).status, 403);
+    assert.strictEqual((await call("GET", "/admin/dealer-enquiries", ops)).status, 403);
+    const list = await call("GET", "/admin/dealer-enquiries?status=new", sales);
+    assert.strictEqual(list.body.enquiries.length, 1);
+    const id = list.body.enquiries[0].id;
+    assert.strictEqual((await call("PATCH", `/admin/dealer-enquiries/${id}/status`, sales, { status: "maybe" })).status, 400);
+    const st = await call("PATCH", `/admin/dealer-enquiries/${id}/status`, sales, { status: "contacted" });
+    assert.strictEqual(st.body.enquiry.status, "contacted");
+    assert.ok(await AuditLog.exists({ action: "dealer.enquiry.status" }));
+    assert.strictEqual((await call("GET", "/admin/dealers/overview", sales)).body.enquiries.new, 0);
   });
 
   await step("separate from retail and ambassadors; everything audited", async () => {
