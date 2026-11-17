@@ -8,13 +8,14 @@ import { decrypt } from "../../ambassador/services/crypto";
 import { rupeesToPaise } from "../../ambassador/money";
 import { audit } from "../../ambassador/services/audit";
 import DealerProfile, { DealerStatus } from "../models/DealerProfile";
+import DealerEnquiry, { DEALER_ENQUIRY_STATUSES } from "../models/DealerEnquiry";
 import DealerPrice from "../models/DealerPrice";
 import DealerOrder, { CLAIM_STATUSES, DEALER_ORDER_STATUSES } from "../models/DealerOrder";
 import DealerUnit from "../models/DealerUnit";
 import DealerSettings, { DEALER_SETTINGS_DEFAULTS, EDITABLE_DEALER_SETTINGS } from "../models/DealerSettings";
 import { clearDealerSettingsCache, getDealerSettings } from "../services/settings";
 import { releaseStock } from "../services/stock";
-import { adminDealerView, dealerOrderView } from "../services/views";
+import { adminDealerView, dealerEnquiryView, dealerOrderView } from "../services/views";
 import { addMonths, cashLimitError, istDayRange, normalizeDealerSerial, validatePayment, validatePriceInput, validateSerials } from "../logic";
 
 const me = (req: Request) => (req as any).user;
@@ -24,16 +25,43 @@ const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // ---- Overview ----
 export const overview = async (_req: Request, res: Response) => {
-  const [applied, approved, byStatus, openClaims] = await Promise.all([
+  const [applied, approved, newEnquiries, byStatus, openClaims] = await Promise.all([
     DealerProfile.countDocuments({ status: "applied" }),
     DealerProfile.countDocuments({ status: "approved" }),
+    DealerEnquiry.countDocuments({ status: "new" }),
     DealerOrder.aggregate([{ $group: { _id: "$status", count: { $sum: 1 }, totalPaise: { $sum: "$totalPaise" } } }]),
     DealerOrder.aggregate([{ $unwind: "$claims" }, { $match: { "claims.status": "open" } }, { $count: "n" }]),
   ]);
   const orders: Record<string, { count: number; totalPaise: number }> = {};
   for (const s of DEALER_ORDER_STATUSES) orders[s] = { count: 0, totalPaise: 0 };
   for (const r of byStatus) orders[r._id] = { count: r.count, totalPaise: r.totalPaise };
-  res.json({ dealers: { applied, approved }, orders, openClaims: openClaims[0]?.n || 0 });
+  res.json({ dealers: { applied, approved }, enquiries: { new: newEnquiries }, orders, openClaims: openClaims[0]?.n || 0 });
+};
+
+// ---- Enquiries (from the public /dealers page) ----
+export const listEnquiries = async (req: Request, res: Response) => {
+  const filter: any = {};
+  const status = req.query.status;
+  if (typeof status === "string" && (DEALER_ENQUIRY_STATUSES as readonly string[]).includes(status)) filter.status = status;
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q) {
+    const rx = new RegExp(escapeRegex(q), "i");
+    filter.$or = [{ businessName: rx }, { contactName: rx }, { phone: rx }, { city: rx }];
+  }
+  const enquiries = await DealerEnquiry.find(filter).sort({ createdAt: -1 }).limit(500).lean();
+  res.json({ enquiries: enquiries.map(dealerEnquiryView) });
+};
+
+export const setEnquiryStatus = async (req: Request, res: Response) => {
+  if (!idOk(req.params.id)) return res.status(404).json({ message: "Enquiry not found" });
+  const status = req.body?.status;
+  if (!(DEALER_ENQUIRY_STATUSES as readonly string[]).includes(status)) return res.status(400).json({ message: "Choose new, contacted or closed" });
+  const before = await DealerEnquiry.findById(req.params.id).select("status").lean();
+  if (!before) return res.status(404).json({ message: "Enquiry not found" });
+  const e = await DealerEnquiry.findByIdAndUpdate(req.params.id, { $set: { status, statusAt: new Date(), statusBy: me(req)._id } }, { new: true }).lean();
+  if (!e) return res.status(404).json({ message: "Enquiry not found" });
+  await audit({ actor: me(req), action: "dealer.enquiry.status", targetType: "DealerEnquiry", targetId: String(e._id), before: { status: before.status }, after: { status } });
+  res.json({ enquiry: dealerEnquiryView(e) });
 };
 
 // ---- Dealers ----

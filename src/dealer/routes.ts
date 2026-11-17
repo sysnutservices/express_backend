@@ -15,9 +15,12 @@ const perUser = (windowMs: number, max: number, message: string) =>
 const registerLimiter = perUser(60 * 60 * 1000, 10, "Too many registration attempts, please try again later.");
 const orderLimiter = perUser(60 * 60 * 1000, 60, "Too many orders in a short time, please slow down.");
 const claimLimiter = perUser(60 * 60 * 1000, 30, "Too many claims in a short time, please slow down.");
+// Public form, so per IP (same limits as the ambassador waitlist).
+const enquiryLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { message: "Too many attempts, please try again later." } });
 
 // ---- Dealer ----
 router.get("/dealers/programme", handle(dealer.getProgramme));
+router.post("/dealers/enquiries", enquiryLimiter, handle(dealer.createEnquiry));
 router.get("/dealers/profile", protect, handle(dealer.getProfile));
 router.post("/dealers/register", protect, registerLimiter, handle(dealer.register));
 router.get("/dealers/catalogue", protect, requireDealer, handle(dealer.getCatalogue));
@@ -42,6 +45,9 @@ router.patch("/admin/dealers/:id/reject", protect, requireStaff(SUPER, SALES), h
 router.patch("/admin/dealers/:id/suspend", protect, requireStaff(SUPER, SALES), handle(admin.changeDealerStatus("suspend")));
 router.patch("/admin/dealers/:id/reactivate", protect, requireStaff(SUPER), handle(admin.changeDealerStatus("reactivate")));
 router.patch("/admin/dealers/:id/notes", protect, requireStaff(SUPER, SALES), handle(admin.updateDealerNotes));
+
+router.get("/admin/dealer-enquiries", protect, requireStaff(SUPER, SALES), handle(admin.listEnquiries));
+router.patch("/admin/dealer-enquiries/:id/status", protect, requireStaff(SUPER, SALES), handle(admin.setEnquiryStatus));
 
 router.get("/admin/dealer-prices", protect, requireStaff(SUPER, SALES, FIN), handle(admin.listPrices));
 router.put("/admin/dealer-prices/:productId", protect, requireStaff(SUPER), handle(admin.setPrice));

@@ -24,6 +24,10 @@ export interface IDealerProfile extends Document {
   pan?: { encrypted: string; last4: string };
   panHash?: string;
   agreement: { version: string; acceptedAt: Date; ip?: string; noWarrantyAcknowledged: boolean };
+  // Answers from the application form, for the admin reviewing it. Codes are
+  // DEALER_* in logic.ts. Not required in the schema: applications made
+  // before these questions existed don't have them.
+  vetting?: { businessType: string; yearsInBusiness: string; monthlyVolume: string; interests?: string };
   flags: { type: string; detail?: string; at: Date }[];
   notes?: string;
   createdAt: Date;
@@ -68,6 +72,10 @@ const DealerProfileSchema = new Schema<IDealerProfile>(
       acceptedAt: { type: Date, required: true },
       ip: String,
       noWarrantyAcknowledged: { type: Boolean, required: true },
+    },
+    vetting: {
+      type: { businessType: String, yearsInBusiness: String, monthlyVolume: String, interests: String, _id: false },
+      default: undefined,
     },
     flags: { type: [{ type: { type: String }, detail: String, at: Date, _id: false }], default: [] },
     notes: String,

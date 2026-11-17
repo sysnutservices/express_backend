@@ -26,6 +26,25 @@ export function adminDealerView(p: any) {
     flags: p.flags || [],
     notes: p.notes || "",
     agreement: p.agreement,
+    vetting: p.vetting || null,
+  };
+}
+
+export function dealerEnquiryView(e: any) {
+  return {
+    id: String(e._id),
+    phone: e.phone,
+    businessName: e.businessName,
+    contactName: e.contactName,
+    city: e.city,
+    businessType: e.businessType,
+    monthlyVolume: e.monthlyVolume,
+    message: e.message || "",
+    source: e.source || {},
+    status: e.status,
+    statusAt: e.statusAt || null,
+    createdAt: e.createdAt,
+    updatedAt: e.updatedAt,
   };
 }
 
