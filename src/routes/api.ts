@@ -6,7 +6,7 @@ import {
     reorderProductImages, publishProduct,
     deleteRootImage, deleteVersion,
 } from '../controllers/productImageController';
-import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected, syncRazorpayPayment, retryRefund, reportUnrecordedPayments, resumePayment, sendPaymentReminderToCustomer } from '../controllers/orderController';
+import { adminGetAllOrders, cancelOrder, rejectCancellation, createOrder, getOrderById, getUserOrders, updateOrderStatus, setItemSerialNumber, verifyPayment, razorpayWebhook, sendLoanEnquiry, checkPincodeServiceability, shipmentWebhook, requestReview, setCodCollected, syncRazorpayPayment, retryRefund, reportUnrecordedPayments, getPaymentAttempts, resumePayment, sendPaymentReminderToCustomer } from '../controllers/orderController';
 import { getUsers, getRecentLogins, blockUser, forceLogoutUser, customerLogin, adminLogin, sendOTP, addAddress, updateAddress, deleteAddress, setDefaultAddress, getAddresses, updateProfile } from '../controllers/authController';
 import { getDashboardStats, getSiteConfig, updateSiteConfig, getAuditLog } from '../controllers/adminController';
 import { authLimiter, otpSendLimiter, otpVerifyLimiter } from '../middleware/rateLimiters';
@@ -122,6 +122,8 @@ router.put("/orders/:id/cancel/reject", protect, admin, rejectCancellation);
 router.post("/orders/:id/request-review", protect, admin, requestReview);
 router.put("/orders/:id/cod-collected", protect, admin, setCodCollected);
 router.post("/orders/:id/sync-payment", protect, admin, syncRazorpayPayment);
+// Read-only: Razorpay's payment attempts for an order and why it's unpaid.
+router.get("/orders/:id/payment-attempts", protect, admin, getPaymentAttempts);
 // Re-attempts a failed cancellation refund (or records one already issued
 // from the Razorpay dashboard). See retryRefund.
 router.post("/orders/:id/retry-refund", protect, admin, retryRefund);

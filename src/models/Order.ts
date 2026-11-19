@@ -136,6 +136,20 @@ export interface IOrder extends Document {
     count: number;
     lastBy?: string; // admin user id, or "payment-reminder" for the sweep
   };
+  // What Razorpay says about the checkout's payment attempts, for showing
+  // why an unpaid order was abandoned. Refreshed by the payment reconciler,
+  // "Check with Razorpay" and the admin order view (utils/paymentAttempts.ts).
+  paymentAttempts?: {
+    checkedAt: Date;
+    count: number;
+    reason: string;
+    detail?: string;
+    lastStatus?: string;
+    lastMethod?: string;
+    lastAt?: Date;
+    errorSource?: string;
+    errorReason?: string;
+  };
   // Sales Ambassador referral captured at checkout (?ref= link). Absent on
   // every order without a valid code. Attribution itself is decided when the
   // order is paid (ambassador/services/orderHooks.ts), not here.
@@ -236,6 +250,18 @@ const OrderSchema = new Schema(
       sentAt: { type: Date },
       count: { type: Number },
       lastBy: { type: String },
+    },
+
+    paymentAttempts: {
+      checkedAt: { type: Date },
+      count: { type: Number },
+      reason: { type: String },
+      detail: { type: String },
+      lastStatus: { type: String },
+      lastMethod: { type: String },
+      lastAt: { type: Date },
+      errorSource: { type: String },
+      errorReason: { type: String },
     },
 
     ambassadorRef: {

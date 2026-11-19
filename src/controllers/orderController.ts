@@ -20,6 +20,7 @@ import { isValidCancellationReason, isCustomerCancellable, CUSTOMER_CANCELLABLE_
 import { logAdminAction } from "../models/AuditLog";
 import Cart from "../models/Cart";
 import { pickOrdersToRemind, customerKeyOf, amountDue, greetingName, REMIND_WITHIN_MS } from "../utils/paymentReminder";
+import { summarizePaymentAttempts, methodLabel, RazorpayPaymentLike } from "../utils/paymentAttempts";
 // Sales Ambassador Network: referral capture + commission sync. Both are
 // best-effort and never throw into the order flow (see ambassador/services/orderHooks.ts).
 import { resolveReferralForNewOrder, syncOrderCommissionsSafe } from "../ambassador/services/orderHooks";
@@ -1582,6 +1583,50 @@ const retryRefundInner = async (req: Request, res: Response) => {
   }
 };
 
+// Stores Razorpay's account of an unpaid order's payment attempts (why it
+// was abandoned) on the order. timestamps: false — a status check isn't an
+// edit, and updatedAt drives the ambassador commission sync.
+async function recordPaymentAttempts(orderId: string, payments: RazorpayPaymentLike[]) {
+  const summary = summarizePaymentAttempts(payments);
+  await Order.updateOne({ orderId }, { $set: { paymentAttempts: summary } }, { timestamps: false });
+  return summary;
+}
+
+// Admin order view: every Razorpay payment attempt for an order's checkout,
+// plus the abandoned reason. Read-only towards Razorpay and never marks the
+// order paid (that's "Check with Razorpay"); only refreshes paymentAttempts.
+export const getPaymentAttempts = async (req: Request, res: Response) => {
+  try {
+    const order = await Order.findOne({ orderId: req.params.id }).select("orderId razorpayOrderId");
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+    if (!order.razorpayOrderId?.startsWith("order_")) {
+      return res.status(400).json({ success: false, message: "This order has no Razorpay checkout." });
+    }
+    const { items } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+    const payments = items as unknown as RazorpayPaymentLike[];
+    const summary = await recordPaymentAttempts(order.orderId, payments);
+    // Only what the admin view shows: no VPA, card, email or phone.
+    const attempts = [...payments]
+      .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))
+      .map((p) => ({
+        id: p.id,
+        status: p.status,
+        method: methodLabel(p),
+        at: p.created_at ? new Date(p.created_at * 1000) : undefined,
+        errorDescription: p.error_description || undefined,
+        errorSource: p.error_source || undefined,
+        errorStep: p.error_step || undefined,
+        errorReason: p.error_reason || undefined,
+      }));
+    res.json({ success: true, summary, attempts });
+  } catch (err: any) {
+    console.error("getPaymentAttempts failed:", err.error || err.message);
+    res.status(502).json({ success: false, message: "Couldn't reach Razorpay. Try again shortly." });
+  }
+};
+
 // Admin "Check with Razorpay": asks Razorpay directly whether an order we
 // still have as unpaid was actually paid. Covers the case neither
 // verifyPayment nor the webhook caught (customer's browser died right after
@@ -1605,10 +1650,12 @@ export const syncRazorpayPayment = async (req: Request, res: Response) => {
     const captured = items.find((p) => p.status === "captured");
     if (!captured) {
       const authorized = items.find((p) => p.status === "authorized");
+      const summary = await recordPaymentAttempts(order.orderId, items as unknown as RazorpayPaymentLike[]);
+      order.paymentAttempts = summary;
       const message = authorized
         ? `Payment ${authorized.id} is authorized but not captured — capture it in the Razorpay dashboard, then check again.`
         : items.length
-          ? `No successful payment on Razorpay (${items.map((p) => p.status).join(", ")}).`
+          ? `No successful payment on Razorpay (${items.map((p) => p.status).join(", ")}). ${summary.reason}${summary.detail ? `: ${summary.detail}` : ""}.`
           : "Razorpay has no payment attempt for this order — the customer never paid.";
       return res.json({ success: true, order, paid: false, message });
     }
@@ -1663,7 +1710,10 @@ async function reconcileRazorpayPayments(since: Date, apply: boolean) {
     try {
       const { items } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
       const captured = items.find((p) => p.status === "captured");
-      if (!captured) continue;
+      if (!captured) {
+        if (apply) await recordPaymentAttempts(order.orderId, items as unknown as RazorpayPaymentLike[]);
+        continue;
+      }
       const amount = Number(captured.amount) / 100;
       if (apply) {
         await markOrderPaid(order.razorpayOrderId, captured.id, undefined);
@@ -1686,6 +1736,32 @@ async function reconcileRazorpayPayments(since: Date, apply: boolean) {
   return { checked: orders.length, errors, found };
 }
 
+// Abandoned orders from before paymentAttempts existed (or older than the
+// reconciler's window) get their reason filled in a few at a time. Only
+// records the reason: an old captured payment shows as "Paid on Razorpay,
+// not recorded" for an admin to act on with Check with Razorpay.
+const ATTEMPTS_BACKFILL_PER_RUN = 20;
+async function backfillPaymentAttempts(before: Date) {
+  const orders = await Order.find({
+    paymentStatus: "Pending",
+    status: "Pending",
+    razorpayOrderId: /^order_/,
+    paymentAttempts: { $exists: false },
+    createdAt: { $lt: before },
+  })
+    .sort({ createdAt: -1 })
+    .limit(ATTEMPTS_BACKFILL_PER_RUN)
+    .select("orderId razorpayOrderId");
+  for (const order of orders) {
+    try {
+      const { items } = await razorpay.orders.fetchPayments(order.razorpayOrderId);
+      await recordPaymentAttempts(order.orderId, items as unknown as RazorpayPaymentLike[]);
+    } catch (err: any) {
+      console.error(`Payment attempts backfill: couldn't check ${order.orderId}:`, err.error || err.message);
+    }
+  }
+}
+
 let reconcileRunning = false;
 export function startPaymentReconciler() {
   if (!process.env.RAZORPAY_KEY || !process.env.RAZORPAY_SECRET) return;
@@ -1693,7 +1769,9 @@ export function startPaymentReconciler() {
     if (reconcileRunning) return;
     reconcileRunning = true;
     try {
-      await reconcileRazorpayPayments(new Date(Date.now() - RECONCILE_LOOKBACK_MS), true);
+      const since = new Date(Date.now() - RECONCILE_LOOKBACK_MS);
+      await reconcileRazorpayPayments(since, true);
+      await backfillPaymentAttempts(since);
     } catch (err: any) {
       console.error("Payment reconciler run failed:", err.message);
     } finally {
@@ -1863,6 +1941,7 @@ async function remindToPay(order: any, actor: { id: string | null; name: string 
     });
     return { sent: false, order: updated, message: `No reminder sent: the customer had already paid (${captured.id}). Order marked paid.` };
   }
+  await recordPaymentAttempts(order.orderId, payments as unknown as RazorpayPaymentLike[]);
 
   const user = order.userId as any;
   const phone = user?.mobile || order.shippingAddress?.phone;
